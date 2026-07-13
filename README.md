@@ -1,10 +1,10 @@
 <div align="center">
   <img src="assets/branding/NoiceCity-1024.png" width="180" alt="Noice City skyline and soundwave logo">
   <h1>Noice City</h1>
-  <p><strong>macOS DMG — coming soon</strong></p>
+  <p><strong><a href="https://github.com/RuhiTaj/noice-city/releases/download/v0.1.0/Noice-City-0.1.0-arm64.dmg">Download Noice City 0.1.0 for Apple Silicon</a></strong></p>
   <p><a href="LICENSE">Apache License 2.0</a> · <a href="TRADEMARKS.md">Brand policy</a></p>
-  <p>A signed and notarized Apple Silicon installer is being prepared.<br>
-  There is no public download yet; until it is released, use the source setup below.</p>
+  <p>Developer ID signed, Apple notarized, and stapled for offline verification.<br>
+  <a href="https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.0">Release notes and SHA-256 checksum</a></p>
 </div>
 
 Noice City creates persistent personal voice variants from the installed
@@ -15,7 +15,7 @@ independent. Inference loads one variant artifact, installs its embedding in
 slot `3000`, switches Qwen to `custom_voice`, and generates from text with no
 reference recording.
 
-## Current development preview
+## Interface preview
 
 <table>
   <tr>
@@ -40,8 +40,8 @@ reference recording.
   </tr>
 </table>
 
-These screenshots show the current local development interface. The packaged
-release will carry the Noice City application branding.
+These screenshots come from a clean, isolated local fixture. They contain no
+personal recordings, transcripts, checkpoints, browser chrome, or user data.
 
 All private state is stored under:
 
@@ -53,8 +53,11 @@ This legacy internal path is intentionally preserved after the Noice City
 rename so existing recordings, datasets, models, and checkpoints remain linked.
 
 Noice City does not import recordings, transcripts, prompt caches, profiles,
-or environments from other voice applications. A first-run setup screen installs
-only the pinned Qwen Base BF16 and Whisper snapshots.
+or environments from other voice applications. The first-run setup installs
+only the pinned Qwen Base BF16 snapshot required for recording, training, and
+generation. A separate, optional action can install the pinned Whisper snapshot
+for automatic transcription, transcript comparison/WER checks, and checkpoint
+evaluation.
 
 Project policies: [Privacy](PRIVACY.md) · [Security](SECURITY.md) ·
 [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) ·
@@ -76,11 +79,25 @@ cd noice-city
 ```
 
 This creates the locked development environment. Start Noice City, then use
-the explicit first-run screen to download approximately 6 GB of pinned Qwen and
-Whisper weights. The downloader runs in its own setup process, verifies and
-hashes every installed file, and atomically stores the models in private
-Application Support storage. If the exact Qwen snapshot is already in the local
-Hugging Face cache, setup adopts it without downloading it again.
+the explicit first-run screen to download approximately 4.5 GB of pinned Qwen
+weights. The downloader runs in its own setup process, verifies and hashes every
+installed file, and atomically stores the model in private Application Support
+storage. If the exact Qwen snapshot is already in the local Hugging Face cache,
+setup adopts it without downloading it again.
+
+Whisper is a separate approximately 1.6 GB install offered inside the app. It
+is optional for recording, manual transcript review, and generation. It is
+required before starting Noice City's training workflow because every saved
+checkpoint automatically runs transcription/WER and checkpoint evaluation.
+Speech activity, silence, clipping, speaking-level/noise, and duration checks
+run locally without Whisper.
+
+Neither download begins from its first button click. A confirmation dialog first
+shows the exact Hugging Face repository, pinned revision, declared model-card
+license, approximate size, private destination under
+`~/Library/Application Support/VoiceTrainer`, and a link to the model notices
+served by the local app. The user must then explicitly confirm that specific
+download.
 
 Locked ML stack:
 
@@ -98,8 +115,9 @@ Locked ML stack:
 Ordinary startup never installs, resolves packages, or contacts a repository.
 It binds only to `http://127.0.0.1:8787`, creates or reuses a private session
 secret stored in Application Support, and opens the private browser UI. On a
-fresh Mac, network access begins only after the user presses **Download model
-pack**; the API process and all later recording, training, and generation
+fresh Mac, network access begins only after the user presses **Download
+Qwen3-TTS** or separately chooses to install **Whisper automatic checks**. The
+API process and all later recording, training, evaluation, and generation
 workers remain offline. API writes require both the session secret and the exact
 loopback Origin.
 
@@ -118,18 +136,22 @@ loopback Origin.
    20% interview answers, 90% neutral, and 10% mild expression. Prompts are
    assigned to 80% train, 10% validation, and 10% locked test before capture.
 3. Masters are immutable 48 kHz mono PCM24 WAV. Noice City creates immutable
-   24 kHz mono PCM16 training derivatives and runs local signal/VAD-style QA and
-   local Whisper transcription. Uncertain takes require complete playback and
-   explicit transcript confirmation.
+   24 kHz mono PCM16 training derivatives. Its built-in audio analysis checks
+   speech activity, silence, clipping, speaking level/noise, and duration
+   without Whisper. When the optional Whisper model is installed, it also adds
+   automatic transcription, transcript comparison, and WER checks. Otherwise,
+   transcript review remains manual. Uncertain takes require complete playback
+   and explicit transcript confirmation.
 4. After two approved minutes from the built-in Recommended mix, **My script**
    unlocks for that voice variant. Paste up to 20,000 characters and the app
    creates short, resumable recording takes. These are supplemental guided,
    neutral training items; validation/test and coverage gates continue to use
    the preassigned catalog prompts.
-5. At two accepted minutes, freeze a pilot dataset and train one pilot
-   checkpoint. At thirty accepted minutes, freeze a full dataset; sixty minutes
-   is recommended. Training always reads a checksummed frozen manifest, never
-   the live recording collection.
+5. Install Whisper before starting training; the app requires it for automatic
+   checkpoint transcription/WER and evaluation. At two accepted minutes, freeze
+   a pilot dataset and train one pilot checkpoint. At thirty accepted minutes,
+   freeze a full dataset; sixty minutes is recommended. Training always reads a
+   checksummed frozen manifest, never the live recording collection.
 6. Training runs in a separate offline process and exits after saving its
    artifacts. A different fresh process reloads each checkpoint and generates
    the twenty locked narration tests without reference audio.
@@ -157,6 +179,7 @@ The primary routes are:
 GET    /api/status
 GET    /api/model-setup
 POST   /api/model-setup
+POST   /api/model-setup/cancel
 GET    /api/variants
 POST   /api/variants
 PATCH  /api/variants/{id}
@@ -166,6 +189,7 @@ GET    /api/custom-scripts/next
 GET    /api/prompts/next
 POST   /api/recordings
 PATCH  /api/recordings/{id}
+POST   /api/recordings/bulk
 POST   /api/datasets/freeze
 POST   /api/training-runs
 GET    /api/training-runs/{id}
@@ -178,10 +202,10 @@ under `/api/checkpoints/{id}/...` for the local UI.
 
 ## macOS app and DMG
 
-**Release status: coming soon.** The first public DMG will be published only
-after its Developer ID signature, Apple notarization ticket, clean-Mac install,
-third-party/model notices, and published checksum have been verified. The
-current package target is Apple Silicon on macOS 26.2 or newer.
+Version 0.1.0 is available from the [GitHub release
+page](https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.0). The DMG is
+Developer ID signed, Apple notarized, stapled, and published with a SHA-256
+checksum. The current package target is Apple Silicon on macOS 26.2 or newer.
 
 The release scaffold in [`packaging/macos`](packaging/macos/README.md) builds an
 Apple Silicon `.app`, signs its nested runtime, creates a drag-to-Applications

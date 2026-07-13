@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
+import threading
 import time
 from pathlib import Path
 
@@ -24,6 +26,10 @@ PHASE_PROGRESS = {
 }
 
 
+class SetupCancelled(Exception):
+    """Raised in the worker's main thread when setup is canceled."""
+
+
 def _write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".partial")
     temporary.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
@@ -31,20 +37,48 @@ def _write_json(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
-def main() -> None:
+def _watch_parent(parent_pid: int, stop: threading.Event) -> None:
+    """Cancel this worker if its API parent disappears unexpectedly."""
+    while not stop.wait(0.5):
+        if os.getppid() != parent_pid:
+            # This worker is launched in its own session.  Signal its whole
+            # process group so downloader helpers cannot outlive the API app.
+            os.killpg(os.getpgrp(), signal.SIGTERM)
+            return
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description="Install pinned Noice City models")
+    parser.add_argument("--component", choices=("qwen", "whisper"), required=True)
     parser.add_argument("--progress", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--failure", type=Path, required=True)
+    parser.add_argument("--staging", type=Path, required=True)
+    parser.add_argument("--parent-pid", type=int, required=True)
     args = parser.parse_args()
     if os.environ.get("VOICETRAINER_ALLOW_MODEL_DOWNLOAD") != "1":
         raise RuntimeError("Model setup worker requires explicit download authorization")
 
     # Import only after checking the dedicated setup-process boundary. Config
     # leaves Hub access enabled only for this worker.
-    from .bootstrap import install_required_models
+    from .bootstrap import install_asr_model, install_qwen_model
 
     args.progress.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent_watch_stop = threading.Event()
+    parent_watch = threading.Thread(
+        target=_watch_parent,
+        args=(args.parent_pid, parent_watch_stop),
+        name="voicetrainer-model-setup-parent-watch",
+        daemon=True,
+    )
+
+    def cancel_handler(signum, frame) -> None:
+        del signum, frame
+        raise SetupCancelled("Model setup canceled")
+
+    old_sigterm = signal.signal(signal.SIGTERM, cancel_handler)
+    old_sigint = signal.signal(signal.SIGINT, cancel_handler)
+    parent_watch.start()
 
     def emit(event: dict) -> None:
         payload = {
@@ -62,10 +96,25 @@ def main() -> None:
             {
                 "component": "setup",
                 "phase": "starting",
-                "message": "Preparing the one-time local model installation",
+                "message": (
+                    "Preparing Qwen3-TTS"
+                    if args.component == "qwen"
+                    else "Preparing Whisper transcription and checkpoint evaluation"
+                ),
             }
         )
-        installed = install_required_models(progress=emit)
+        if args.component == "qwen":
+            installed = {
+                "qwen": str(
+                    install_qwen_model(progress=emit, staging_path=args.staging)
+                )
+            }
+        else:
+            installed = {
+                "whisper": str(
+                    install_asr_model(progress=emit, staging_path=args.staging)
+                )
+            }
         result = {"status": "complete", "models": installed, "progress": 1.0}
         _write_json(args.result, result)
         emit(
@@ -76,10 +125,19 @@ def main() -> None:
                 "progress": 1.0,
             }
         )
+        return 0
+    except SetupCancelled as exc:
+        _write_json(args.failure, {"status": "cancelled", "error": str(exc)})
+        return 130
     except Exception as exc:
         _write_json(args.failure, {"status": "failed", "error": str(exc)})
         raise
+    finally:
+        parent_watch_stop.set()
+        parent_watch.join(timeout=1.0)
+        signal.signal(signal.SIGTERM, old_sigterm)
+        signal.signal(signal.SIGINT, old_sigint)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

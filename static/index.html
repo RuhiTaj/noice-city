@@ -200,9 +200,12 @@
               <p class="eyebrow">Quality control</p>
               <p class="variant-context">Reviewing <strong id="review-variant-name">no variant selected</strong></p>
               <h1>Keep only the takes you trust.</h1>
-              <p>Listen, confirm the transcript, and approve each clean recording.</p>
+              <p>Speech activity, silence, clipping, and duration checks run without Whisper. Confirm transcripts yourself, or add Whisper for automatic transcripts and WER checks.</p>
             </div>
             <div class="review-header-actions">
+              <span class="speech-checks-state" id="speech-checks-state">Checking optional Whisper features…</span>
+              <button class="button secondary" id="install-speech-checks" type="button" hidden>Install Whisper for automatic transcripts · 1.6 GB</button>
+              <button class="button secondary model-download-cancel" id="cancel-speech-checks" type="button" hidden>Cancel Whisper download</button>
               <button class="button secondary" id="refresh-recordings" type="button">Refresh checks</button>
             </div>
           </header>
@@ -295,6 +298,11 @@
                   </label>
                 </div>
                 <p class="runtime-estimate" id="runtime-estimate">Choose a frozen dataset for a local runtime estimate.</p>
+                <div class="training-speech-checks" id="training-speech-checks">
+                  <p id="training-speech-checks-state">Checking automatic checkpoint evaluation…</p>
+                  <button class="button secondary" id="install-training-speech-checks" type="button" hidden>Install Whisper for checkpoint evaluation · 1.6 GB</button>
+                  <button class="button secondary model-download-cancel" id="cancel-training-speech-checks" type="button" hidden>Cancel Whisper download</button>
+                </div>
 
                 <div class="training-progress" id="training-progress" hidden>
                   <div class="progress-copy"><strong id="training-step">Preparing dataset…</strong><span id="training-percent">0%</span></div>
@@ -412,22 +420,48 @@
       <article class="model-setup-card" role="dialog" aria-modal="true">
         <img class="model-setup-mark" src="/static/branding/noice-city-icon.png" alt="" aria-hidden="true">
         <p class="eyebrow">One-time setup</p>
-        <h1 id="model-setup-title">Install your local voice models.</h1>
-        <p class="model-setup-intro">Noice City downloads the exact Qwen3-TTS and Whisper models once, verifies them, and stores them privately on this Mac. After setup, recording, training, and generation work offline.</p>
-        <div class="model-setup-models" aria-label="Required model pack">
-          <div><strong>Qwen3-TTS 1.7B Base</strong><span>about 4.5 GB</span></div>
-          <div><strong>Whisper speech checks</strong><span>about 1.5 GB</span></div>
+        <h1 id="model-setup-title">Install Qwen3-TTS locally.</h1>
+        <p class="model-setup-intro">Noice City downloads the exact Qwen3-TTS Base model once, verifies it, and stores it privately on this Mac. Review its pinned source, license, size, and destination before confirming. If Qwen is already installed and verified, it is reused.</p>
+        <div class="model-setup-models single" aria-label="Required voice model">
+          <div><strong>Qwen3-TTS 1.7B Base</strong><span>about 4.5 GB · required for recording, training, and generation</span></div>
         </div>
         <div class="model-setup-progress" id="model-setup-progress" hidden>
           <div><strong id="model-setup-message">Preparing download…</strong><span id="model-setup-percent">0%</span></div>
           <div class="large-progress animated"><span id="model-setup-bar"></span></div>
           <p id="model-setup-phase">Keep Noice City open while setup finishes.</p>
+          <button class="button secondary model-setup-cancel" id="cancel-model-setup" type="button">Cancel Qwen download</button>
         </div>
         <p class="model-setup-error" id="model-setup-error" role="alert" hidden></p>
-        <button class="button primary model-setup-button" id="start-model-setup" type="button">Download model pack · about 6 GB</button>
-        <small>Internet is used only for this explicit setup step. Your recordings are never uploaded.</small>
+        <button class="button primary model-setup-button" id="start-model-setup" type="button">Download Qwen3-TTS · about 4.5 GB</button>
+        <small>Internet is used only for this explicit Qwen setup step. Your recordings are never uploaded.</small>
       </article>
     </section>
+
+    <dialog class="model-consent-dialog" id="model-consent-dialog" aria-labelledby="model-consent-title">
+      <article class="model-consent-card">
+        <header class="model-consent-heading">
+          <div>
+            <p class="eyebrow">Before downloading</p>
+            <h2 id="model-consent-title">Review the local model install</h2>
+          </div>
+          <button class="dialog-close" id="close-model-consent" type="button" aria-label="Cancel model download">×</button>
+        </header>
+        <p class="model-consent-intro" id="model-consent-intro"></p>
+        <dl class="model-consent-details">
+          <div><dt>Repository</dt><dd id="model-consent-repository"></dd></div>
+          <div><dt>Pinned revision</dt><dd><code id="model-consent-revision"></code></dd></div>
+          <div><dt>Declared license</dt><dd id="model-consent-license"></dd></div>
+          <div><dt>Approximate size</dt><dd id="model-consent-size"></dd></div>
+          <div class="model-consent-destination"><dt>Private destination</dt><dd><code>~/Library/Application Support/VoiceTrainer</code></dd></div>
+        </dl>
+        <p class="model-consent-network">Confirming starts a dedicated download from Hugging Face. No recordings, transcripts, trained voices, or generated audio are uploaded.</p>
+        <p><a class="model-notices-link" href="/static/MODEL_NOTICES.md" target="_blank" rel="noopener">Read the locally served MODEL_NOTICES.md</a></p>
+        <div class="button-row align-end">
+          <button class="button secondary" id="cancel-model-consent" type="button">Cancel</button>
+          <button class="button primary" id="confirm-model-consent" type="button">Confirm download</button>
+        </div>
+      </article>
+    </dialog>
 
     <dialog class="variant-dialog" id="variant-dialog" aria-labelledby="variant-dialog-title">
       <div class="variant-dialog-shell">

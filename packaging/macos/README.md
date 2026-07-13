@@ -18,10 +18,15 @@ Those internal directories intentionally keep the `VoiceTrainer` name so an
 existing local installation, recordings, datasets, and checkpoints continue to
 work after the Noice City rebrand.
 
-The Qwen and Whisper models are therefore a separate, explicit first-run
-download. Once verified and installed in Application Support, ordinary app
-startup forces model libraries offline and binds the server only to
-`127.0.0.1:8787`.
+Model downloads are therefore explicit and separate. Qwen is the required
+approximately 4.5 GB first-run voice model for recording, training, and
+generation. Whisper is an optional approximately 1.6 GB install for automatic
+transcription, transcript comparison/WER checks, and checkpoint evaluation.
+Built-in speech-activity, silence, clipping, speaking-level/noise, and duration
+checks do not need Whisper. Noice City's training endpoint does require Whisper
+because automatic checkpoint evaluation is a mandatory part of every training
+run. Once installed in Application Support, ordinary app startup forces model
+libraries offline and binds the server only to `127.0.0.1:8787`.
 
 ## Prerequisites
 
@@ -30,10 +35,24 @@ startup forces model libraries offline and binds the server only to
   requires a separately validated MLX build rather than changing the plist.
 - Xcode command-line tools.
 - `uv` for preparing the release runtime.
-- A trusted, checksum-pinned Python 3.12 arm64 `install_only`
+- `zstd` for extracting the pinned full Python archive (for example,
+  `brew install zstd`).
+- The exact matching `install_only` and `full`
   [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
-  archive. Keep the archive and its SHA-256 in release provenance; this scaffold
-  intentionally does not download an unpinned interpreter for you.
+  CPython 3.12.13 arm64 archives. The script verifies these pinned SHA-256s:
+
+  ```text
+  3724aa4dafb5f7b6c2cf98e89914e4248dc6bd2fe40407df4a2d73de99615f16  cpython-3.12.13+20260623-aarch64-apple-darwin-install_only.tar.gz
+  ce5a2d552077d869f69dc25d834c2fe4d036f9d78e770fb5d916273db802cabc  cpython-3.12.13+20260623-aarch64-apple-darwin-pgo+lto-full.tar.zst
+  ```
+
+  The full archive is release evidence: it supplies `PYTHON.json` and all
+  component `license_path` files that the install-only archive omits. One
+  upstream metadata defect is handled explicitly: the archive references but
+  omits `LICENSE.zlib-ng.txt`, so this repository carries an exact hash-pinned
+  copy of `LICENSE.md` from the archive's pinned zlib-ng 2.2.4 source. Its URL,
+  source-archive hash, and license hash are written into the app's release
+  provenance. The distributable runtime still comes only from `install_only`.
 - The branded Finder icon at `assets/branding/NoiceCity.icns`. The builder uses
   it automatically. If that source file is absent, the app remains buildable
   with the generic application icon; `--icon /path/to/another.icns` overrides
@@ -50,14 +69,35 @@ From the repository root:
 
 ```bash
 packaging/macos/prepare-runtime.sh \
-  --python-archive /absolute/path/cpython-3.12-arm64-install_only.tar.zst \
+  --python-archive /absolute/path/cpython-3.12.13+20260623-aarch64-apple-darwin-install_only.tar.gz \
+  --python-full-archive /absolute/path/cpython-3.12.13+20260623-aarch64-apple-darwin-pgo+lto-full.tar.zst \
   --output build/macos/runtime
 ```
 
-This unpacks the relocatable interpreter and installs the locked application
-dependencies. It may access package indexes while installing the locked
-dependency graph during this release-build step. It never downloads model
-weights.
+This verifies both archive hashes, proves every install-only file matches its
+counterpart in the full archive, collects the referenced Python component
+licenses, unpacks the relocatable interpreter, and installs the locked
+application dependencies using `--only-binary=:all:` and `--require-hashes`.
+The exact `uv.lock` and exported hashed requirements are retained with the
+release provenance. The script removes unused Tcl/Tk, SciPy, sounddevice,
+tests, caches, and temporary-path console scripts after a smoke import. It may
+access package indexes while installing that locked, wheel-only dependency
+graph during this release-build step. It never downloads model weights.
+
+MLX-Audio 0.4.5 declares SciPy and SoundDevice unconditionally even though
+Noice City does not call its optional resampler or audio-player paths. After
+those packages are pruned, the preparation script applies a deliberately
+narrow metadata overlay: it removes exactly those two `Requires-Dist` lines
+from MLX-Audio's `METADATA`, updates the matching `RECORD` entry, and changes no
+package code. The upstream wheel hash and the original/modified `METADATA` and
+`RECORD` hashes are retained in `MLX_AUDIO_METADATA_OVERLAY.json`. A successful
+`pip check` result and the final installed-package inventory are retained too.
+
+The tokenizers 0.22.2 and sentencepiece 0.2.2 macOS wheels omit their upstream
+Apache-2.0 texts, so exact hash-verified copies from their pinned source
+distributions are promoted into `THIRD_PARTY_LICENSES/runtime-packages`. tqdm's
+exact wheel-provided `LICENCE` is promoted alongside them. Source and wheel
+hashes plus a license checksum manifest are included in release provenance.
 
 ## 2. Build and verify the app
 
@@ -68,7 +108,7 @@ packaging/macos/build-app.sh \
   --runtime build/macos/runtime \
   --bundle-id com.example.noicecity \
   --version 0.1.0 \
-  --build 1 \
+  --build 2 \
   --sign -
 
 packaging/macos/verify-app.sh 'dist/macos/Noice City.app'
@@ -82,14 +122,29 @@ session and exits.
 For a public build, use the installed Developer ID identity:
 
 ```bash
---sign "Developer ID Application: YOUR NAME (TEAMID1234)"
+packaging/macos/build-app.sh \
+  --runtime build/macos/runtime \
+  --version 0.1.0 \
+  --build 2 \
+  --sign "Developer ID Application: Ruhitaj Reddypalli (28DPUBPSZD)"
+
+packaging/macos/verify-app.sh --release 'dist/macos/Noice City.app'
 ```
 
-Replace the example bundle identifier and signing identity with the values for
-the account publishing the build.
+`--release` is intentionally stricter than local verification. It pins the
+public bundle identifier, product name, version/build, minimum macOS version,
+canonical icon, Developer ID team and authority, hardened runtime, timestamp,
+and empty entitlement set (including no `allow-jit`). It also requires strict
+and deep code-signature verification.
 
-The builder uses an explicit allowlist (`voice_trainer`, `static`, `assets`, and
-`pyproject.toml`) and scans the resulting bundle for common private artifacts.
+The builder uses an explicit allowlist (`voice_trainer`, `static`,
+`assets/prompts.json`, and `pyproject.toml`) and scans the resulting bundle for
+common private artifacts and release-machine paths. Runtime licenses are placed
+under `Contents/Resources/THIRD_PARTY_LICENSES` and archive provenance under
+`Contents/Resources/RELEASE_PROVENANCE`. The latter includes the pinned
+Python-archive evidence and a `runtime-dependencies` directory containing the
+exact lockfile, hashed requirements, installed-package inventory, `pip check`
+result, MLX-Audio overlay audit, and runtime-package license provenance.
 The runtime is validated as Python 3.12 arm64 before the app is emitted.
 The canonical `assets/branding/NoiceCity.icns` artwork is copied to
 `Contents/Resources/AppIcon.icns` and registered in the bundle automatically.
@@ -137,16 +192,24 @@ Gatekeeper assessment.
 The packaging layer deliberately does not put model files in the `.app`. The
 application setup screen and `/api/model-setup` service:
 
-1. Explain the exact Qwen and Whisper downloads, revisions, approximate size,
-   and destination before connecting.
-2. Begin only after an explicit user click.
-3. Download to a private staging directory under Application Support.
-4. Reject unsafe file types, verify the pinned revision and every expected hash,
+1. Explain the exact required Qwen repository, pinned revision, declared
+   model-card license, approximately 4.5 GB size, and private Application
+   Support destination before connecting. The app becomes usable after this
+   model alone is verified.
+2. Offer Whisper separately and label it optional for recording, manual review,
+   and generation, while clearly stating it must be installed before training
+   because checkpoint transcription/WER evaluation is automatic and mandatory.
+3. Explain that speech activity, silence, clipping, speaking-level/noise, and
+   duration checks continue to work without Whisper.
+4. Link to a locally served `MODEL_NOTICES.md`, then require a second explicit
+   confirmation in the disclosure dialog before either model install begins.
+5. Download to a private staging directory under Application Support.
+6. Reject unsafe file types, verify the pinned revision and every expected hash,
    then atomically install the completed model directory.
-5. Delete partial staging data on failure or cancellation.
-6. Restore all Hugging Face offline and telemetry-disabled environment settings
-   before starting inference, recording QA, training, or generation.
-7. Offer retry after a failed or incomplete install without ever resolving
+7. Delete partial staging data on failure or cancellation.
+8. Restore all Hugging Face offline and telemetry-disabled environment settings
+   before starting inference, recording QA, training, evaluation, or generation.
+9. Offer retry after a failed or incomplete install without ever resolving
    packages or contacting a model repository during ordinary startup.
 
 The `.app` launcher and normal API process remain offline. Only the dedicated

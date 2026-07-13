@@ -34,14 +34,40 @@ def wav_bytes(
     channels: int = 1,
     silence_seconds: float = 0.25,
     sample_width: int = 3,
+    signal: str = "speech",
 ) -> bytes:
     frames = int(seconds * sample_rate)
-    samples: list[int] = []
     silence_frames = int(silence_seconds * sample_rate)
+    active_values: list[float] = []
     for index in range(frames):
-        value = 0 if index < silence_frames or index >= frames - silence_frames else round(
-            amplitude * math.sin(2 * math.pi * 220 * index / sample_rate)
-        )
+        if index < silence_frames or index >= frames - silence_frames:
+            active_values.append(0.0)
+            continue
+        time_value = index / sample_rate
+        if signal == "tone":
+            value = math.sin(2 * math.pi * 220 * time_value)
+        elif signal == "noise":
+            # Deterministic white-noise-like sequence: plenty of energy, but no
+            # pitch-range periodicity for the model-free speech gate.
+            state = (1_103_515_245 * (index + 1) + 12_345) & 0x7FFFFFFF
+            value = (state / 0x7FFFFFFF) * 2.0 - 1.0
+        elif signal == "speech":
+            envelope = 0.25 + 0.75 * math.sin(2 * math.pi * 2.3 * time_value) ** 2
+            value = envelope * (
+                math.sin(2 * math.pi * 125 * time_value)
+                + 0.46 * math.sin(2 * math.pi * 250 * time_value + 0.2)
+                + 0.30 * math.sin(2 * math.pi * 500 * time_value + 0.4)
+                + 0.24 * math.sin(2 * math.pi * 750 * time_value + 0.7)
+                + 0.18 * math.sin(2 * math.pi * 1_350 * time_value + 0.1)
+                + 0.13 * math.sin(2 * math.pi * 2_300 * time_value + 0.6)
+            )
+        else:
+            raise AssertionError(f"unknown test signal: {signal}")
+        active_values.append(value)
+    scale = amplitude / max((abs(value) for value in active_values), default=1.0)
+    samples: list[int] = []
+    for raw_value in active_values:
+        value = round(raw_value * scale)
         samples.extend([value] * channels)
     if sample_width == 3:
         payload = b"".join(
@@ -123,6 +149,26 @@ def test_audio_rejects_wrong_format_and_detects_hot_peak() -> None:
     report = analyze_master_wav(io.BytesIO(wav_bytes(amplitude=8_200_000)))
     assert not report.passed
     assert "peak_too_hot" in report.failures
+
+
+def test_model_free_speech_activity_rejects_a_tone_and_accepts_speech() -> None:
+    speech = analyze_master_wav(io.BytesIO(wav_bytes(signal="speech")))
+    tone = analyze_master_wav(io.BytesIO(wav_bytes(signal="tone")))
+    noise = analyze_master_wav(io.BytesIO(wav_bytes(signal="noise")))
+
+    assert speech.passed
+    assert speech.metrics.speech_activity.algorithm == "acoustic-vad-v1"
+    assert speech.metrics.speech_activity.speech_ratio >= 0.12
+    assert "speech_not_detected" not in speech.failures
+
+    assert not tone.passed
+    assert tone.metrics.speech_activity.active_frame_count > 0
+    assert tone.metrics.speech_activity.speech_ratio < 0.12
+    assert "speech_not_detected" in tone.failures
+
+    assert not noise.passed
+    assert noise.metrics.speech_activity.active_frame_count > 0
+    assert "speech_not_detected" in noise.failures
 
 
 def test_review_rules_and_immutable_checksummed_freeze(tmp_path: Path) -> None:
@@ -237,18 +283,23 @@ def test_explicit_batch_approval_keeps_failed_takes_pending(tmp_path: Path) -> N
         transcript=prompts[1].text,
     )
 
-    result = store.approve_all_pending()
+    result = store.bulk_update_recordings(
+        [clean["id"], failed["id"]],
+        "approved",
+        confirm_review=True,
+    )
 
-    assert result["approved_ids"] == [clean["id"]]
+    assert result["updated_ids"] == [clean["id"]]
     assert result["skipped_count"] == 1
     assert store.get_recording(clean["id"])["review_status"] == "approved"
-    assert store.get_recording(clean["id"])["playback_confirmed"] is True
+    assert store.get_recording(clean["id"])["playback_confirmed"] is False
     assert store.get_recording(failed["id"])["review_status"] == "pending"
 
     overridden = store.bulk_update_recordings(
         [failed["id"]],
         "approved",
         confirm_review=True,
+        playback_confirmed_ids={failed["id"]},
         override_failed_qa=True,
     )
     assert overridden["updated_ids"] == [failed["id"]]
@@ -265,6 +316,51 @@ def test_explicit_batch_approval_keeps_failed_takes_pending(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="explicit review confirmation"):
         store.bulk_update_recordings([clean["id"]], "approved")
+
+
+def test_batch_playback_confirmation_is_recording_specific(tmp_path: Path) -> None:
+    store = VoiceStore(tmp_path).initialize()
+    session = store.create_session("guided")
+    prompts = [prompt for prompt in store.catalog.prompts if prompt.kind == "guided"][:2]
+    clean = store.add_recording(
+        prompts[0].id,
+        session_id=session["id"],
+        master_bytes=wav_bytes(),
+        transcript=prompts[0].text,
+    )
+    manual = store.add_recording(
+        prompts[1].id,
+        session_id=session["id"],
+        master_bytes=wav_bytes(),
+        transcript=None,
+    )
+
+    result = store.bulk_update_recordings(
+        [clean["id"], manual["id"]],
+        "approved",
+        transcripts={manual["id"]: prompts[1].text},
+        confirm_review=True,
+    )
+
+    assert result["updated_ids"] == [clean["id"]]
+    assert result["skipped"] == [
+        {
+            "id": manual["id"],
+            "reason": "Uncertain recordings must be played back before approval",
+        }
+    ]
+    assert store.get_recording(clean["id"])["playback_confirmed"] is False
+    assert store.get_recording(manual["id"])["playback_confirmed"] is False
+
+    reviewed = store.bulk_update_recordings(
+        [manual["id"]],
+        "approved",
+        transcripts={manual["id"]: prompts[1].text},
+        confirm_review=True,
+        playback_confirmed_ids={manual["id"]},
+    )
+    assert reviewed["updated_ids"] == [manual["id"]]
+    assert store.get_recording(manual["id"])["playback_confirmed"] is True
 
 
 def _approved_variant_recordings(store: VoiceStore, variant_id: str) -> list[dict]:

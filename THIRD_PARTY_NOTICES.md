@@ -8,13 +8,30 @@ release runtime. It is based on the locked application dependencies and the
 locally prepared arm64 release runtime inspected on 2026-07-13. It is not a
 replacement for the license text supplied by each project.
 
-The release bundle preserves package-supplied license files under:
+The release bundle preserves each package-supplied license file under:
 
 `Noice City.app/Contents/Resources/runtime/lib/python3.12/site-packages/`
 
 The CPython license is preserved at:
 
 `Noice City.app/Contents/Resources/runtime/lib/python3.12/LICENSE.txt`
+
+The exact python-build-standalone component license set and release provenance
+used to prepare the interpreter are also promoted to:
+
+`Noice City.app/Contents/Resources/THIRD_PARTY_LICENSES/python-build-standalone/`
+
+`Noice City.app/Contents/Resources/RELEASE_PROVENANCE/python-build-standalone/`
+
+The exact lockfile, hashed requirements, installed-package inventory, package
+metadata overlay audit, and promoted runtime-package license hashes are kept at:
+
+`Noice City.app/Contents/Resources/RELEASE_PROVENANCE/runtime-dependencies/`
+
+Exact license texts that were absent or ambiguous at the top level of their
+macOS wheels are promoted to:
+
+`Noice City.app/Contents/Resources/THIRD_PARTY_LICENSES/runtime-packages/`
 
 A rebuild can change transitive dependencies. Release maintainers must compare
 this inventory with the actual staged runtime for every release.
@@ -64,11 +81,8 @@ label here records upstream metadata; it is not an independent legal opinion.
 | regex | 2026.7.10 | Apache-2.0 AND CNRI-Python |
 | rich | 15.0.0 | MIT |
 | safetensors | 0.8.0 | Apache-2.0 |
-| scipy | 1.18.0 | BSD-3-Clause; see native libraries below |
 | sentencepiece | 0.2.2 | Apache-2.0 |
 | shellingham | 1.5.4 | ISC |
-| sounddevice | 0.5.5 | MIT; see PortAudio below |
-| soundfile | 0.13.1 | BSD-3-Clause; see libsndfile below |
 | starlette | 0.52.1 | BSD-3-Clause |
 | tokenizers | 0.22.2 | Apache-2.0 |
 | tqdm | 4.68.4 | MPL-2.0 AND MIT |
@@ -92,44 +106,45 @@ CPython's Python Software Foundation license is retained in the app bundle.
 The archive was produced by
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone).
 
-The inspected `install_only` archive contains Tcl/Tk dynamic libraries but no
-separate Tcl/Tk notice file; its only non-package top-level license file is the
-CPython license. Before distributing a public DMG, the release maintainer must
-obtain and bundle the corresponding runtime dependency notices (or use a
-runtime artifact that already supplies a complete notice set). This document
-does not attempt to infer missing build provenance.
+The release preparation process also requires the exact companion full archive
+`cpython-3.12.13+20260623-aarch64-apple-darwin-pgo+lto-full.tar.zst` (SHA-256
+`ce5a2d552077d869f69dc25d834c2fe4d036f9d78e770fb5d916273db802cabc`).
+Every entry shipped from the install-only archive is checked against its
+counterpart in that full archive. The full archive's `PYTHON.json`, archive
+checksums, and license manifest are retained as release provenance.
 
-### libsndfile
+The component license paths referenced by the pinned `PYTHON.json` cover
+CPython, bzip2, Expat, libedit, libffi, liblzma, libuuid, mpdecimal, ncurses,
+OpenSSL 1.1, OpenSSL 3, SQLite, Tcl, zlib, and zlib-ng. All 15 texts are copied
+into the app's top-level third-party license directory. The pinned full archive
+references but accidentally omits its zlib-ng license file, so release
+preparation supplies the exact upstream zlib-ng 2.2.4 license and retains its
+source/archive hashes in `SUPPLEMENTAL_LICENSE_PROVENANCE.txt`.
 
-The SoundFile wheel contains `libsndfile_arm64.dylib`; runtime inspection
-reports libsndfile 1.2.2. The installed wheel identifies libsndfile as LGPL and
-retains the complete LGPL-2.1 text. That text is located at
-`site-packages/_soundfile_data/COPYING`. Source is available from the
-[libsndfile project](https://github.com/libsndfile/libsndfile/releases/tag/1.2.2).
+### Deliberately pruned optional components
 
-### PortAudio
+MLX-Audio 0.4.5 declares SciPy and SoundDevice unconditionally for code paths
+that Noice City does not call: its SciPy resampler and SoundDevice player. Release
+preparation removes SciPy, SoundDevice, PortAudio, and their package metadata
+after installing the locked dependency graph. It then removes exactly those
+two stale unconditional `Requires-Dist` declarations from MLX-Audio 0.4.5's
+installed metadata, updates the corresponding `RECORD` entry, runs `pip check`,
+and retains the upstream wheel hash plus the original and modified metadata
+hashes. No MLX-Audio package code is changed. SoundFile and libsndfile are not
+present in the locked release graph.
 
-The SoundDevice wheel contains `libportaudio.dylib`. Runtime inspection reports
-`PortAudio V19.7.0-devel, revision unknown`. The wheel's own README attributes
-PortAudio to Ross Bencina and Phil Burk under the MIT License and identifies
-the binary source project as
-[spatialaudio/portaudio-binaries](https://github.com/spatialaudio/portaudio-binaries).
-The exact PortAudio source revision is not recorded in the installed wheel;
-release maintainers must archive or otherwise document the corresponding
-source before redistribution.
+The tokenizers 0.22.2 and sentencepiece 0.2.2 macOS wheels omit their upstream
+Apache-2.0 texts. Exact copies from their hash-pinned source distributions are
+therefore promoted to the top-level runtime-package license directory. tqdm
+4.68.4's exact wheel-provided `LICENCE` is promoted there as well. Release
+verification checks all three texts against their reviewed SHA-256 values.
 
-### SciPy GCC runtime libraries
-
-The installed SciPy wheel contains these dynamically linked libraries:
-
-- `libgfortran.5.dylib` and `libgcc_s.1.1.dylib` — GPL-3.0-or-later WITH
-  GCC-exception-3.1.
-- `libquadmath.0.dylib` — LGPL-2.1-or-later.
-
-SciPy's installed `LICENSE.txt` retains the full applicable license texts and
-GCC Runtime Library Exception. The wheel metadata does not identify the exact
-GCC source revision used for these binaries; that source provenance should be
-archived as part of the public binary release process.
+The pinned CPython archive contains an optional Tcl/Tk GUI stack. Noice City's
+Python process has no GUI code, so release preparation removes `_tkinter`,
+`tkinter`, IDLE, and the Tcl/Tk/Itcl/Thread libraries and resources. The Tcl
+license text remains in the complete python-build-standalone license set for
+conservative attribution. Bundle verification rejects these pruned packages
+and libraries if they reappear.
 
 ### MPL components
 

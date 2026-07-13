@@ -12,7 +12,8 @@ Depending on the features used, Noice City stores:
 - voice-variant profiles and frozen dataset manifests;
 - LoRA adapters, speaker embeddings, checkpoints, and evaluation results;
 - generated WAV files;
-- pinned Qwen and Whisper model snapshots; and
+- the required pinned Qwen snapshot and, when chosen, the optional pinned
+  Whisper snapshot; and
 - a local state database, logs, caches, and a private session secret.
 
 Mutable application data is kept under the following legacy internal paths:
@@ -35,14 +36,18 @@ Network access is limited to setup actions initiated by the user:
 
 - `./setup.sh` may contact Python package indexes to install the locked
   development dependencies.
-- Pressing **Download model pack** starts a dedicated installer that contacts
-  Hugging Face for the pinned Qwen and Whisper snapshots. It does not upload
-  recordings, transcripts, trained artifacts, or generated audio.
+- Pressing **Download Qwen3-TTS** starts a dedicated installer that contacts
+  Hugging Face for the required pinned Qwen snapshot. A separate explicit
+  **Install Whisper** action downloads the optional snapshot used for automatic
+  transcription, transcript comparison/WER checks, and checkpoint evaluation.
+  Neither action uploads recordings, transcripts, trained artifacts, or
+  generated audio.
 
-After the model pack is verified and installed, ordinary startup, recording,
+After a selected model is verified and installed, ordinary startup, recording,
 transcription, training, evaluation, and generation are designed to operate
-offline. Noice City binds its UI and API only to `127.0.0.1`, not to a LAN
-address.
+offline. Basic speech-activity, silence, clipping, speaking-level/noise, and
+duration checks do not use Whisper. Noice City binds its UI and API only to
+`127.0.0.1`, not to a LAN address.
 
 Operating-system services, the browser, package managers, Git, and other tools
 used alongside Noice City have their own privacy behavior and are outside this

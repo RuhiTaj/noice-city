@@ -7,7 +7,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APP_NAME="Noice City"
 BUNDLE_ID="com.ruhitaj.noicecity"
 VERSION="0.1.0"
-BUILD_NUMBER="1"
+BUILD_NUMBER="2"
 RUNTIME_DIR=""
 OUTPUT_DIR="$PROJECT_ROOT/dist/macos"
 DEFAULT_ICON_FILE="$PROJECT_ROOT/assets/branding/NoiceCity.icns"
@@ -89,11 +89,36 @@ RESOURCES="$CONTENTS/Resources"
 APP_RESOURCES="$RESOURCES/app"
 mkdir -p "$CONTENTS/MacOS" "$APP_RESOURCES"
 
-# Copy only runtime code and static assets needed by the installed application.
-/usr/bin/ditto --noqtn "$PROJECT_ROOT/voice_trainer" "$APP_RESOURCES/voice_trainer"
-/usr/bin/ditto --noqtn "$PROJECT_ROOT/static" "$APP_RESOURCES/static"
-/usr/bin/ditto --noqtn "$PROJECT_ROOT/assets" "$APP_RESOURCES/assets"
-/bin/cp "$PROJECT_ROOT/pyproject.toml" "$APP_RESOURCES/pyproject.toml"
+# Copy only Git-tracked application files. This prevents an ignored recording,
+# credential, cache, or other local file from entering a release merely because
+# it was placed below an otherwise allowlisted source directory.
+command -v git >/dev/null 2>&1 || die "git is required to enumerate release sources"
+git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+  die "project root is not a Git working tree"
+TRACKED_SOURCE_COUNT=0
+while IFS= read -r -d '' relative; do
+  case "$relative" in
+    voice_trainer/*|static/*) ;;
+    *) die "Git returned an unexpected release source: $relative" ;;
+  esac
+  source_file="$PROJECT_ROOT/$relative"
+  [[ -f "$source_file" && ! -L "$source_file" ]] ||
+    die "tracked release source is missing, not regular, or a symlink: $relative"
+  destination="$APP_RESOURCES/$relative"
+  mkdir -p "$(dirname "$destination")"
+  /bin/cp "$source_file" "$destination"
+  TRACKED_SOURCE_COUNT=$((TRACKED_SOURCE_COUNT + 1))
+done < <(git -C "$PROJECT_ROOT" ls-files -z -- voice_trainer static)
+[[ "$TRACKED_SOURCE_COUNT" -gt 10 ]] || die "tracked application source set is unexpectedly small"
+
+for relative in assets/prompts.json pyproject.toml; do
+  git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 ||
+    die "required release source is not Git-tracked: $relative"
+  [[ -f "$PROJECT_ROOT/$relative" && ! -L "$PROJECT_ROOT/$relative" ]] ||
+    die "required release source is missing, not regular, or a symlink: $relative"
+  mkdir -p "$APP_RESOURCES/$(dirname "$relative")"
+  /bin/cp "$PROJECT_ROOT/$relative" "$APP_RESOURCES/$relative"
+done
 for notice_file in LICENSE NOTICE TRADEMARKS.md THIRD_PARTY_NOTICES.md MODEL_NOTICES.md; do
   [[ -f "$PROJECT_ROOT/$notice_file" ]] || die "required release notice is missing: $notice_file"
   /bin/cp "$PROJECT_ROOT/$notice_file" "$RESOURCES/$notice_file"
@@ -107,6 +132,51 @@ case "$RUNTIME_DIR" in
     ;;
 esac
 /usr/bin/ditto --noqtn "$RUNTIME_DIR" "$RESOURCES/runtime"
+
+# prepare-runtime.sh obtains these notices and provenance from the exact pinned
+# full python-build-standalone companion archive. Promote them to an obvious
+# top-level Resources location rather than burying them inside the interpreter.
+RUNTIME_RELEASE="$RESOURCES/runtime/share/noice-city/release/python-build-standalone"
+DEPENDENCY_RELEASE="$RESOURCES/runtime/share/noice-city/release/runtime-dependencies"
+RUNTIME_PACKAGE_LICENSE_RELEASE="$RESOURCES/runtime/share/noice-city/release/runtime-package-licenses"
+for provenance_file in \
+  PYTHON.json ARCHIVE_SHA256S.txt LICENSES_SHA256.txt SUPPLEMENTAL_LICENSE_PROVENANCE.txt; do
+  [[ -s "$RUNTIME_RELEASE/$provenance_file" ]] || die "runtime release provenance is missing: $provenance_file"
+done
+if ! /usr/bin/find "$RUNTIME_RELEASE/licenses" -type f -print -quit | /usr/bin/grep -q .; then
+  die "runtime release provenance contains no Python component licenses"
+fi
+for provenance_file in \
+  uv.lock requirements.txt INSTALLED_PACKAGES.txt PIP_CHECK.txt \
+  MLX_AUDIO_METADATA_OVERLAY.json RUNTIME_PACKAGE_LICENSES_SHA256.txt \
+  RUNTIME_PACKAGE_LICENSE_PROVENANCE.txt SHA256SUMS.txt; do
+  [[ -s "$DEPENDENCY_RELEASE/$provenance_file" ]] || \
+    die "runtime dependency provenance is missing: $provenance_file"
+done
+if ! /usr/bin/find "$RUNTIME_PACKAGE_LICENSE_RELEASE" -type f -print -quit | /usr/bin/grep -q .; then
+  die "runtime package license set is empty"
+fi
+mkdir -p \
+  "$RESOURCES/THIRD_PARTY_LICENSES/python-build-standalone" \
+  "$RESOURCES/THIRD_PARTY_LICENSES/runtime-packages" \
+  "$RESOURCES/RELEASE_PROVENANCE/python-build-standalone" \
+  "$RESOURCES/RELEASE_PROVENANCE/runtime-dependencies"
+/usr/bin/ditto --noqtn \
+  "$RUNTIME_RELEASE/licenses" \
+  "$RESOURCES/THIRD_PARTY_LICENSES/python-build-standalone"
+/usr/bin/ditto --noqtn \
+  "$RUNTIME_PACKAGE_LICENSE_RELEASE" \
+  "$RESOURCES/THIRD_PARTY_LICENSES/runtime-packages"
+/usr/bin/ditto --noqtn \
+  "$DEPENDENCY_RELEASE" \
+  "$RESOURCES/RELEASE_PROVENANCE/runtime-dependencies"
+for provenance_file in \
+  PYTHON.json ARCHIVE_SHA256S.txt LICENSES_SHA256.txt SUPPLEMENTAL_LICENSE_PROVENANCE.txt; do
+  /bin/cp \
+    "$RUNTIME_RELEASE/$provenance_file" \
+    "$RESOURCES/RELEASE_PROVENANCE/python-build-standalone/$provenance_file"
+done
+/bin/rm -rf "$RESOURCES/runtime/share/noice-city/release"
 
 /bin/cp "$SCRIPT_DIR/templates/Info.plist" "$CONTENTS/Info.plist"
 /bin/cp "$SCRIPT_DIR/templates/NoiceCity.launcher" "$RESOURCES/NoiceCity.launcher"
@@ -144,6 +214,18 @@ for forbidden in .venv state.sqlite session-token manifest.json recordings datas
     die "forbidden private/build artifact entered bundle: $forbidden"
   fi
 done
+
+if /usr/bin/find "$APP_RESOURCES" -type f \
+  \( -iname '*.pem' -o -iname '*.key' -o -iname '*.p12' -o -iname '*.pfx' \
+     -o -iname '*.cer' -o -iname '*.crt' -o -iname '*.mobileprovision' \) \
+  -print -quit | /usr/bin/grep -q .; then
+  die "credential or signing material entered the application source bundle"
+fi
+
+if /usr/bin/find "$APP_RESOURCES/assets" -mindepth 1 \
+  ! -path "$APP_RESOURCES/assets/prompts.json" -print -quit | /usr/bin/grep -q .; then
+  die "an unallowlisted source asset entered the application bundle"
+fi
 
 RUNTIME_MACHINE="$("$RESOURCES/runtime/bin/python3" -B -c 'import platform; print(platform.machine())')"
 [[ "$RUNTIME_MACHINE" == "arm64" ]] || die "runtime is $RUNTIME_MACHINE, expected arm64"

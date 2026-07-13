@@ -44,8 +44,8 @@ MODEL_REVISION = "a6eb4f68e4b056f1215157bb696209bc82a6db48"
 MODEL_ROOT = APP_ROOT / "models" / "qwen3-tts-1.7b-base" / MODEL_REVISION
 MODEL_MANIFEST = MODEL_ROOT / "manifest.json"
 
-ASR_REPO = "mlx-community/whisper-large-v3-turbo-asr-fp16"
-ASR_REVISION = "624c19c9af5603fa73b83bce14d4aeea96156d18"
+ASR_REPO = "openai/whisper-large-v3-turbo"
+ASR_REVISION = "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
 ASR_ROOT = APP_ROOT / "models" / "whisper-large-v3-turbo" / ASR_REVISION
 ASR_MANIFEST = ASR_ROOT / "manifest.json"
 

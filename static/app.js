@@ -5,6 +5,24 @@ const SESSION_KEY = "voicetrainer_session";
 const ACTIVE_VARIANT_KEY = "voicetrainer_active_variant";
 const VARIANT_SESSIONS_KEY = "voicetrainer_variant_sessions";
 const MAX_GENERATION_SEED = 4294967295;
+const MODEL_DOWNLOAD_DISCLOSURES = Object.freeze({
+  qwen: {
+    name: "Qwen3-TTS 1.7B Base",
+    repository: "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    revision: "a6eb4f68e4b056f1215157bb696209bc82a6db48",
+    license: "Apache-2.0 (declared by the pinned model card)",
+    size: "4.54 GB",
+    intro: "Qwen is the required local voice model for recording, training, and generation.",
+  },
+  whisper: {
+    name: "Whisper large-v3-turbo",
+    repository: "openai/whisper-large-v3-turbo",
+    revision: "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+    license: "MIT (declared by the pinned model card)",
+    size: "1.623 GB",
+    intro: "Whisper is optional for recording and generation. It adds automatic transcripts and WER checks, and is required before training because checkpoint evaluation is mandatory.",
+  },
+});
 
 function bootstrapSessionToken() {
   const fragment = window.location.hash.slice(1);
@@ -38,6 +56,7 @@ const state = {
   statusRequestId: 0,
   reviewFilter: "all",
   selectedRecordings: new Set(),
+  playedBackRecordings: new Set(),
   transcriptEdits: {},
   session: { takes: 0, seconds: 0, guided: 0, interview: 0 },
   capture: null,
@@ -49,6 +68,8 @@ const state = {
   trainingPoll: null,
   evaluationPoll: null,
   setupPoll: null,
+  cancellingModelSetup: null,
+  pendingModelDownload: null,
   outputUrl: null,
   blind: {
     checkpointId: null,
@@ -383,6 +404,7 @@ function resetVariantScopedState() {
   state.checkpoints = [];
   state.status = {};
   state.selectedRecordings.clear();
+  state.playedBackRecordings.clear();
   state.transcriptEdits = {};
   state.session = { takes: 0, seconds: 0, guided: 0, interview: 0 };
   state.trainingRunId = null;
@@ -1160,6 +1182,17 @@ function visibleRecordings() {
   });
 }
 
+function recordingRequiresPlayback(recording) {
+  const transcriptStatus = String(recording.transcript_status || "").toLowerCase();
+  return Boolean(recording.qa_needs_review)
+    || ["pending", "review_required"].includes(transcriptStatus);
+}
+
+function recordingPlaybackCompleted(recording) {
+  return Boolean(recording.playback_confirmed)
+    || state.playedBackRecordings.has(recording.id);
+}
+
 function updateSelectionToolbar() {
   const count = state.selectedRecordings.size;
   $("#selected-recording-count").textContent = `${count} selected`;
@@ -1184,6 +1217,7 @@ function renderRecordings() {
   $("#review-count").textContent = state.recordings.length;
   const validIds = new Set(state.recordings.map((recording) => recording.id));
   state.selectedRecordings = new Set([...state.selectedRecordings].filter((id) => validIds.has(id)));
+  state.playedBackRecordings = new Set([...state.playedBackRecordings].filter((id) => validIds.has(id)));
   const filtered = visibleRecordings();
   updateSelectionToolbar();
   list.replaceChildren();
@@ -1223,8 +1257,8 @@ function makeRecordingCard(recording) {
   selectLabel.append(select);
   const audio = new Audio();
   let audioObjectUrl = null;
-  let playedBack = Boolean(recording.playback_confirmed);
-  const requiresPlayback = Boolean(recording.qa_needs_review) || ["pending", "review_required"].includes(recording.transcript_status);
+  let playedBack = recordingPlaybackCompleted(recording);
+  const requiresPlayback = recordingRequiresPlayback(recording);
   const play = document.createElement("button");
   play.type = "button"; play.className = "play-take"; play.textContent = "▶"; play.setAttribute("aria-label", "Play take");
   play.addEventListener("click", async () => {
@@ -1242,6 +1276,7 @@ function makeRecordingCard(recording) {
   audio.addEventListener("ended", () => {
     play.textContent = "▶";
     playedBack = true;
+    state.playedBackRecordings.add(recording.id);
     if (status !== "approved") approve.disabled = false;
     if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
     audioObjectUrl = null;
@@ -1321,15 +1356,30 @@ function clearRecordingSelection() {
 }
 
 async function bulkReviewRecordings(status) {
-  const recordingIds = [...state.selectedRecordings];
-  if (!recordingIds.length) return;
+  const selectedIds = [...state.selectedRecordings];
+  if (!selectedIds.length) return;
   if (!state.variantId) return showToast("Choose a voice variant first.", "error");
   const variant = state.variantId;
   const verb = status === "approved" ? "approve" : status === "quarantined" ? "quarantine" : "reject";
   const selectedRows = state.recordings.filter((recording) => state.selectedRecordings.has(recording.id));
-  const failedQaCount = selectedRows.filter((recording) => recording.qa_passed === false).length;
+  const unplayedRows = status === "approved"
+    ? selectedRows.filter((recording) => recordingRequiresPlayback(recording) && !recordingPlaybackCompleted(recording))
+    : [];
+  const unplayedIds = new Set(unplayedRows.map((recording) => recording.id));
+  const requestRows = status === "approved"
+    ? selectedRows.filter((recording) => !unplayedIds.has(recording.id))
+    : selectedRows;
+  const recordingIds = requestRows.map((recording) => recording.id);
+  if (!recordingIds.length) {
+    showToast(
+      `Nothing approved. Play ${unplayedRows.length === 1 ? "the selected uncertain take" : `all ${unplayedRows.length} selected uncertain takes`} to the end first. Quarantine and Reject remain available.`,
+      "error",
+    );
+    return;
+  }
+  const failedQaCount = requestRows.filter((recording) => recording.qa_passed === false).length;
   const warning = status === "approved"
-    ? `This confirms you accept the selected recordings and their displayed transcripts.${failedQaCount ? ` ${failedQaCount} are QA-flagged and will be explicitly overridden.` : ""}`
+    ? `This confirms you accept ${recordingIds.length} recordings and their displayed transcripts.${failedQaCount ? ` ${failedQaCount} are QA-flagged and will be explicitly overridden.` : ""}${unplayedRows.length ? ` ${unplayedRows.length} uncertain or manually transcribed ${unplayedRows.length === 1 ? "take remains" : "takes remain"} selected until played to the end.` : ""}`
     : status === "rejected"
       ? "Rejected takes remain stored locally but will be excluded from training."
       : "Quarantined takes remain stored locally and excluded from training.";
@@ -1346,18 +1396,24 @@ async function bulkReviewRecordings(status) {
         variant_id: variant,
         recording_ids: recordingIds,
         status,
-        confirm_playback: status === "approved",
+        playback_confirmed_ids: status === "approved"
+          ? requestRows.filter(recordingPlaybackCompleted).map((recording) => recording.id)
+          : [],
+        confirm_playback: false,
         confirm_transcripts: status === "approved",
         override_failed_qa: status === "approved",
         transcripts,
       },
     });
     if (state.variantId !== variant) return;
-    const skipped = Number(result.skipped_count || 0);
-    state.selectedRecordings = new Set((result.skipped || []).map((item) => item.id));
+    state.selectedRecordings = new Set([
+      ...unplayedRows.map((recording) => recording.id),
+      ...(result.skipped || []).map((item) => item.id),
+    ]);
     for (const id of result.updated_ids || []) delete state.transcriptEdits[id];
     const overridden = Number(result.overridden_count || 0);
-    showToast(`${verb[0].toUpperCase()}${verb.slice(1)}d ${result.updated_count || 0} takes${overridden ? ` (${overridden} QA overrides recorded)` : ""}${skipped ? `; ${skipped} remain selected` : ""}.`);
+    const remaining = state.selectedRecordings.size;
+    showToast(`${verb[0].toUpperCase()}${verb.slice(1)}d ${result.updated_count || 0} takes${overridden ? ` (${overridden} QA overrides recorded)` : ""}${remaining ? `; ${remaining} remain selected${unplayedRows.length ? " because playback is still required" : ""}` : ""}.`);
     await Promise.allSettled([loadRecordings(), refreshStatus()]);
   } catch (error) {
     if (state.variantId !== variant) return;
@@ -1373,35 +1429,55 @@ function statusNumber(...values) {
 
 function renderModelSetup(setup = {}) {
   const status = state.status || {};
-  const modelReady = Boolean(status.model_ready ?? status.model?.ready);
-  const asrReady = Boolean(status.asr?.ready);
-  const ready = typeof setup.ready === "boolean" ? setup.ready : modelReady && asrReady;
-  const active = Boolean(setup.active || setup.status === "running");
+  const modelReady = Boolean(setup.models?.qwen?.ready ?? status.model_ready ?? status.model?.ready);
+  const ready = typeof setup.ready === "boolean" ? setup.ready : modelReady;
+  const active = Boolean(setup.active || setup.status === "running" || setup.status === "cancelling");
+  const qwenActive = active && (setup.component || "qwen") === "qwen";
+  const cancelling = setup.status === "cancelling" || state.cancellingModelSetup === "qwen";
   const failed = setup.status === "failed";
+  const cancelled = setup.status === "cancelled";
   const overlay = $("#model-setup-overlay");
   overlay.hidden = ready;
   $(".app-shell").inert = !ready;
   document.body.classList.toggle("setup-required", !ready);
+  renderSpeechChecks(setup);
   if (ready) {
-    window.clearTimeout(state.setupPoll);
-    state.setupPoll = null;
+    $("#cancel-model-setup").hidden = true;
+    if (active && !state.setupPoll) state.setupPoll = window.setTimeout(refreshModelSetup, 1000);
+    if (!active) {
+      window.clearTimeout(state.setupPoll);
+      state.setupPoll = null;
+    }
     return;
   }
   const progress = Math.max(0, Math.min(1, Number(setup.progress) || 0));
-  $("#model-setup-progress").hidden = !active;
+  $("#model-setup-progress").hidden = !qwenActive;
   $("#model-setup-message").textContent = setup.message || "Preparing model download…";
   $("#model-setup-percent").textContent = `${Math.round(progress * 100)}%`;
   $("#model-setup-bar").style.width = `${progress * 100}%`;
-  $("#model-setup-phase").textContent = active
-    ? "Keep Noice City open. Download time depends on your connection."
+  $("#model-setup-phase").textContent = qwenActive
+    ? cancelling
+      ? "Stopping the installer and removing this download's partial files…"
+      : "Keep Noice City open. Download time depends on your connection."
     : "The models are downloaded only once and remain private on this Mac.";
   $("#model-setup-error").hidden = !failed;
   $("#model-setup-error").textContent = failed ? setup.error || "Model setup failed. Check your connection and try again." : "";
   const button = $("#start-model-setup");
-  button.disabled = active;
-  button.textContent = active ? "Downloading model pack…" : failed ? "Retry model download" : "Download model pack · about 6 GB";
+  button.disabled = qwenActive;
+  button.textContent = qwenActive
+    ? cancelling ? "Canceling Qwen3-TTS download…" : "Downloading Qwen3-TTS…"
+    : failed || cancelled
+      ? "Restart Qwen3-TTS download"
+      : "Download Qwen3-TTS · about 4.5 GB";
+  const cancelButton = $("#cancel-model-setup");
+  cancelButton.hidden = !qwenActive;
+  cancelButton.disabled = cancelling;
+  cancelButton.textContent = cancelling ? "Canceling download…" : "Cancel Qwen download";
   if (active && !state.setupPoll) {
     state.setupPoll = window.setTimeout(refreshModelSetup, 1000);
+  } else if (!active) {
+    window.clearTimeout(state.setupPoll);
+    state.setupPoll = null;
   }
 }
 
@@ -1410,6 +1486,7 @@ async function refreshModelSetup() {
   state.setupPoll = null;
   try {
     const setup = await api("/model-setup");
+    state.status.model_setup = setup;
     renderModelSetup(setup);
     if (setup.ready) await refreshStatus();
   } catch (error) {
@@ -1417,14 +1494,122 @@ async function refreshModelSetup() {
   }
 }
 
+function openModelDownloadConsent(component) {
+  const disclosure = MODEL_DOWNLOAD_DISCLOSURES[component];
+  if (!disclosure) return;
+  state.pendingModelDownload = component;
+  $("#model-consent-title").textContent = `Download ${disclosure.name}?`;
+  $("#model-consent-intro").textContent = disclosure.intro;
+  $("#model-consent-repository").textContent = disclosure.repository;
+  $("#model-consent-revision").textContent = disclosure.revision;
+  $("#model-consent-license").textContent = disclosure.license;
+  $("#model-consent-size").textContent = disclosure.size;
+  $("#confirm-model-consent").textContent = `Confirm ${disclosure.size} download`;
+  $("#model-consent-dialog").showModal();
+}
+
+function closeModelDownloadConsent() {
+  state.pendingModelDownload = null;
+  $("#model-consent-dialog").close();
+}
+
+async function confirmModelDownload() {
+  const component = state.pendingModelDownload;
+  if (!MODEL_DOWNLOAD_DISCLOSURES[component]) return;
+  state.pendingModelDownload = null;
+  $("#model-consent-dialog").close();
+  if (component === "qwen") await startModelSetup();
+  else await installSpeechChecks();
+}
+
 async function startModelSetup() {
   const button = $("#start-model-setup");
   button.disabled = true;
   try {
-    const setup = await api("/model-setup", { method: "POST", body: {} });
+    const setup = await api("/model-setup", { method: "POST", body: { component: "qwen" } });
+    state.status.model_setup = setup;
     renderModelSetup(setup);
   } catch (error) {
     renderModelSetup({ status: "failed", error: error.message });
+  }
+}
+
+function whisperFeaturesReady(setup = state.status?.model_setup || {}) {
+  const status = state.status || {};
+  return Boolean(setup.models?.whisper?.ready ?? setup.speech_checks_ready ?? status.asr?.ready);
+}
+
+function renderSpeechChecks(setup = {}) {
+  const ready = whisperFeaturesReady(setup);
+  const active = Boolean(
+    (setup.active || setup.status === "running" || setup.status === "cancelling")
+    && setup.component === "whisper"
+  );
+  const cancelling = active && (setup.status === "cancelling" || state.cancellingModelSetup === "whisper");
+  const reviewLabel = $("#speech-checks-state");
+  const trainingLabel = $("#training-speech-checks-state");
+  const buttons = [$("#install-speech-checks"), $("#install-training-speech-checks")].filter(Boolean);
+  if (reviewLabel) reviewLabel.textContent = ready
+    ? "Whisper installed: automatic transcripts and WER checks are ready"
+    : active
+      ? cancelling ? "Canceling the Whisper download safely…" : "Installing optional Whisper features…"
+      : "Core audio checks are active without Whisper; transcripts stay manual";
+  if (trainingLabel) trainingLabel.textContent = ready
+    ? "Whisper is installed for automatic WER and checkpoint evaluation."
+    : active
+      ? cancelling ? "Canceling the Whisper download safely…" : "Installing Whisper for automatic WER and checkpoint evaluation…"
+      : "Whisper is optional for recording and generation, but required before training because every checkpoint runs automatic transcript/WER evaluation.";
+  for (const button of buttons) {
+    button.hidden = ready || active;
+    button.disabled = active;
+    button.textContent = active
+      ? "Installing Whisper…"
+      : button.id === "install-training-speech-checks"
+        ? "Install Whisper for checkpoint evaluation · 1.6 GB"
+        : "Install Whisper for automatic transcripts · 1.6 GB";
+  }
+  const cancelButtons = [$("#cancel-speech-checks"), $("#cancel-training-speech-checks")].filter(Boolean);
+  for (const button of cancelButtons) {
+    button.hidden = !active;
+    button.disabled = cancelling;
+    button.textContent = cancelling ? "Canceling Whisper download…" : "Cancel Whisper download";
+  }
+  updateTrainButton();
+  updateRuntimeEstimate();
+}
+
+async function installSpeechChecks() {
+  const buttons = [$("#install-speech-checks"), $("#install-training-speech-checks")].filter(Boolean);
+  for (const button of buttons) button.disabled = true;
+  try {
+    const setup = await api("/model-setup", { method: "POST", body: { component: "whisper" } });
+    state.status.model_setup = setup;
+    renderModelSetup(setup);
+  } catch (error) {
+    showToast(`Could not install Whisper features: ${error.message}`, "error");
+    for (const button of buttons) button.disabled = false;
+  }
+}
+
+async function cancelModelSetup(component) {
+  if (!MODEL_DOWNLOAD_DISCLOSURES[component] || state.cancellingModelSetup) return;
+  state.cancellingModelSetup = component;
+  const current = state.status?.model_setup || { component, active: true };
+  renderModelSetup({ ...current, component, active: true, status: "cancelling" });
+  try {
+    const setup = await api("/model-setup/cancel", {
+      method: "POST",
+      body: { component },
+    });
+    state.status.model_setup = setup;
+    showToast(`${MODEL_DOWNLOAD_DISCLOSURES[component].name} download canceled. Partial files were removed.`);
+    renderModelSetup(setup);
+  } catch (error) {
+    showToast(`Could not cancel the model download: ${error.message}`, "error");
+    await refreshModelSetup();
+  } finally {
+    state.cancellingModelSetup = null;
+    renderModelSetup(state.status?.model_setup || {});
   }
 }
 
@@ -1628,6 +1813,10 @@ function updateRuntimeEstimate() {
   }
   if (gate.awaitingReview) {
     $("#runtime-estimate").textContent = "Finish the blinded checkpoint review before starting another training run.";
+    return;
+  }
+  if (!whisperFeaturesReady()) {
+    $("#runtime-estimate").textContent = "Install Whisper before training so the saved checkpoint can run automatic transcript/WER evaluation.";
     return;
   }
   const selected = state.datasets.find((dataset) => datasetId(dataset) === $("#dataset-version").value);
@@ -1915,8 +2104,18 @@ async function refreshStatus() {
 function updateTrainButton() {
   const button = $("#start-training");
   const gate = evaluationGate();
-  button.disabled = !state.variantId || !$("#dataset-version").value || Boolean(state.trainingRunId) || gate.active || gate.awaitingReview;
-  button.textContent = gate.active ? "Evaluation running…" : gate.awaitingReview ? "Finish blinded review" : "Start local training";
+  const speechChecksReady = whisperFeaturesReady();
+  const hasDataset = Boolean($("#dataset-version").value);
+  button.disabled = !state.variantId || !hasDataset || Boolean(state.trainingRunId) || gate.active || gate.awaitingReview || !speechChecksReady;
+  button.textContent = gate.active
+    ? "Evaluation running…"
+    : gate.awaitingReview
+      ? "Finish blinded review"
+      : !hasDataset
+        ? "Choose a frozen dataset"
+        : !speechChecksReady
+          ? "Install Whisper above to train"
+          : "Start local training";
 }
 
 async function freezeDataset() {
@@ -1949,6 +2148,10 @@ async function startTraining() {
   const dataset = $("#dataset-version").value;
   if (!state.variantId) return showToast("Choose a voice variant before training.", "error");
   if (!dataset) return;
+  if (!whisperFeaturesReady()) {
+    showToast("Install Whisper first. Noice City requires it for automatic transcript/WER and checkpoint evaluation after training.", "error");
+    return;
+  }
   const variant = state.variantId;
   const gate = evaluationGate();
   if (gate.active || gate.awaitingReview) {
@@ -2128,7 +2331,19 @@ function bindEvents() {
     });
   }
   $("#close-variant-dialog").addEventListener("click", () => $("#variant-dialog").close());
-  $("#start-model-setup").addEventListener("click", startModelSetup);
+  $("#start-model-setup").addEventListener("click", () => openModelDownloadConsent("qwen"));
+  $("#cancel-model-setup").addEventListener("click", () => cancelModelSetup("qwen"));
+  $("#install-speech-checks").addEventListener("click", () => openModelDownloadConsent("whisper"));
+  $("#install-training-speech-checks").addEventListener("click", () => openModelDownloadConsent("whisper"));
+  $("#cancel-speech-checks").addEventListener("click", () => cancelModelSetup("whisper"));
+  $("#cancel-training-speech-checks").addEventListener("click", () => cancelModelSetup("whisper"));
+  $("#close-model-consent").addEventListener("click", closeModelDownloadConsent);
+  $("#cancel-model-consent").addEventListener("click", closeModelDownloadConsent);
+  $("#confirm-model-consent").addEventListener("click", confirmModelDownload);
+  $("#model-consent-dialog").addEventListener("close", () => { state.pendingModelDownload = null; });
+  $("#model-consent-dialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeModelDownloadConsent();
+  });
   $("#variant-dialog").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) event.currentTarget.close();
   });

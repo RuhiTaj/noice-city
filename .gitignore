@@ -34,6 +34,9 @@ session-token
 *.provisionprofile
 *.notary.json
 *.notary-log.json
+*.dmg
+*.pkg
+*.xcarchive/
 
 # Keep the original high-resolution brand master private; the repository ships
 # only the app-ready official assets covered by TRADEMARKS.md.
@@ -44,8 +47,19 @@ session-token
 *.flac
 *.mp3
 *.m4a
+*.aif
+*.aiff
+*.aac
+*.ogg
+*.opus
 *.safetensors
 *.gguf
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.npy
+*.npz
 /models/
 /recordings/
 /profiles/

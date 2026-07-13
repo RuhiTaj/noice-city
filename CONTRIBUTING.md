@@ -29,8 +29,12 @@ cd noice-city
 ./start.sh
 ```
 
-The model pack is approximately 6 GB and is installed separately through the
-first-run UI. Most unit tests do not require model weights or voice recordings.
+The first-run UI installs the required approximately 4.5 GB Qwen snapshot. The
+optional approximately 1.6 GB Whisper install adds automatic transcription,
+transcript comparison/WER checks, and checkpoint evaluation; Noice City's
+training workflow requires it because evaluation is mandatory. Basic audio
+checks and most unit tests do not require Whisper, model weights, or voice
+recordings.
 
 ## A good issue includes
 
