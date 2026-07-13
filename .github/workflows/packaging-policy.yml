@@ -1,0 +1,42 @@
+name: Packaging policy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-release-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify release metadata, wheel pins, notices, and script syntax
+        run: python tests/test_macos_packaging.py
+      - name: Audit locked runtime dependencies for known vulnerabilities
+        run: |
+          python -m pip install uv==0.11.28 pip-audit==2.10.1
+          uv export --frozen --all-groups --no-emit-project --output-file audited-requirements.txt
+          pip-audit --require-hashes --requirement audited-requirements.txt
+
+  macos-binary-policy:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the exact locked application and test dependencies
+        run: |
+          python -m pip install uv==0.11.28
+          uv sync --locked
+      - name: Run the complete application and packaging test suite on macOS 14 arm64
+        run: uv run --frozen python -m pytest -q
+      - name: Exercise the Mach-O gate with macOS 14 and newer fixtures
+        run: /bin/bash tests/test_macho_audit_macos.sh

@@ -3,7 +3,7 @@
 Noice City itself is licensed under the Apache License 2.0; see [LICENSE](LICENSE).
 The components below remain subject to their own license and attribution terms.
 
-This document inventories third-party software in the Noice City 0.1.0 macOS
+This document inventories third-party software in the Noice City 0.1.1 macOS
 release runtime. It is based on the locked application dependencies and the
 locally prepared arm64 release runtime inspected on 2026-07-13. It is not a
 replacement for the license text supplied by each project.
@@ -50,7 +50,7 @@ label here records upstream metadata; it is not an independent legal opinion.
 | certifi | 2026.6.17 | MPL-2.0 |
 | cffi | 2.1.0 | MIT-0 |
 | click | 8.4.2 | BSD-3-Clause |
-| fastapi | 0.128.8 | MIT |
+| fastapi | 0.139.0 | MIT |
 | filelock | 3.29.7 | MIT |
 | fsspec | 2025.3.0 | BSD-3-Clause |
 | h11 | 0.16.0 | MIT |
@@ -76,14 +76,14 @@ label here records upstream metadata; it is not an independent legal opinion.
 | pydantic | 2.13.4 | MIT |
 | pydantic-core | 2.46.4 | MIT |
 | Pygments | 2.20.0 | BSD-2-Clause |
-| python-multipart | 0.0.20 | Apache-2.0 |
+| python-multipart | 0.0.32 | Apache-2.0 |
 | PyYAML | 6.0.3 | MIT |
 | regex | 2026.7.10 | Apache-2.0 AND CNRI-Python |
 | rich | 15.0.0 | MIT |
 | safetensors | 0.8.0 | Apache-2.0 |
 | sentencepiece | 0.2.2 | Apache-2.0 |
 | shellingham | 1.5.4 | ISC |
-| starlette | 0.52.1 | BSD-3-Clause |
+| starlette | 1.3.1 | BSD-3-Clause |
 | tokenizers | 0.22.2 | Apache-2.0 |
 | tqdm | 4.68.4 | MPL-2.0 AND MIT |
 | transformers | 5.12.1 | Apache-2.0 |

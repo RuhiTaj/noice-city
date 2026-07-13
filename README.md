@@ -1,12 +1,10 @@
 <div align="center">
   <img src="assets/branding/NoiceCity-1024.png" width="180" alt="Noice City skyline and soundwave logo">
   <h1>Noice City</h1>
-  <p><strong>macOS download temporarily withdrawn</strong><br>
-  The 0.1.0 package selected a macOS 26-only MLX wheel. A corrected,
-  re-audited Apple Silicon build is coming soon.</p>
+  <p><strong><a href="https://github.com/RuhiTaj/noice-city/releases/download/v0.1.1-rc.1/Noice-City-0.1.1-arm64.dmg">Download the Noice City 0.1.1 release candidate for Apple Silicon</a></strong></p>
   <p><a href="LICENSE">Apache License 2.0</a> · <a href="TRADEMARKS.md">Brand policy</a></p>
   <p>Developer ID signed, Apple notarized, and stapled for offline verification.<br>
-  <a href="https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.0">Withdrawal details</a></p>
+  <a href="https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.1-rc.1">Release notes, compatibility audit, and SHA-256 checksum</a></p>
 </div>
 
 Noice City creates persistent personal voice variants from the installed
@@ -69,7 +67,7 @@ Project policies: [Privacy](PRIVACY.md) · [Security](SECURITY.md) ·
 
 ## Prerequisites
 
-- An Apple Silicon Mac running macOS 26.2 or newer for the current pinned MLX build
+- An Apple Silicon Mac running macOS 14.0 or newer
 - Python 3.12
 - [`uv`](https://docs.astral.sh/uv/)
 
@@ -204,10 +202,15 @@ under `/api/checkpoints/{id}/...` for the local UI.
 
 ## macOS app and DMG
 
-Version 0.1.0 is available from the [GitHub release
-page](https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.0). The DMG is
+The 0.1.1 release candidate is available from the [GitHub release
+page](https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.1-rc.1). The DMG is
 Developer ID signed, Apple notarized, stapled, and published with a SHA-256
-checksum. The current package target is Apple Silicon on macOS 26.2 or newer.
+checksum. The current package target is Apple Silicon on macOS 14.0 or newer;
+Intel Macs are not supported because MLX requires Apple Silicon. Version 0.1.0
+was withdrawn after its release build incorrectly selected macOS 26-specific
+MLX wheels. The candidate remains a prerelease until its GitHub-downloaded DMG
+also passes on a separate macOS 14 Apple Silicon Mac. See the [compatibility
+policy and incident audit](docs/COMPATIBILITY.md).
 
 The release scaffold in [`packaging/macos`](packaging/macos/README.md) builds an
 Apple Silicon `.app`, signs its nested runtime, creates a drag-to-Applications

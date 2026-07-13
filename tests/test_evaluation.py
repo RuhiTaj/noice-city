@@ -151,6 +151,21 @@ def test_analyze_generated_wav_detects_repetition_and_silence(tmp_path):
     assert silent_metrics["intelligible"] is False
 
 
+def test_analyze_generated_wav_ignores_quotation_marks_for_termination(tmp_path):
+    tone = tmp_path / "quoted-speech.wav"
+    _write_tone(tone, duration=3.0)
+
+    metrics = analyze_generated_wav(
+        tone,
+        expected_text="Maya said, 'We should listen before we decide.'",
+        asr_text="Maya said, We should listen before we decide.",
+    )
+
+    assert metrics["wer"] == pytest.approx(0.0)
+    assert metrics["final_expected_word_reached"] is True
+    assert metrics["termination_ok"] is True
+
+
 def test_evaluate_checkpoint_generates_all_prompts_without_reference_audio(tmp_path):
     _FakeRuntime.instances.clear()
     artifact = tmp_path / "checkpoint"

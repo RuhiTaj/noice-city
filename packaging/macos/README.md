@@ -30,9 +30,10 @@ libraries offline and binds the server only to `127.0.0.1:8787`.
 
 ## Prerequisites
 
-- Apple Silicon Mac running macOS 26.2 or newer. The pinned MLX 0.32.0 wheel
-  currently declares that deployment target; supporting older macOS releases
-  requires a separately validated MLX build rather than changing the plist.
+- Apple Silicon Mac running macOS 14.0 or newer. The release builder installs
+  the exact hash-pinned `macosx_14_0_arm64` MLX and MLX-Metal wheels before the
+  rest of the locked graph. Intel Macs are unsupported because MLX requires
+  Apple Silicon.
 - Xcode command-line tools.
 - `uv` for preparing the release runtime.
 - `zstd` for extracting the pinned full Python archive (for example,
@@ -78,11 +79,18 @@ This verifies both archive hashes, proves every install-only file matches its
 counterpart in the full archive, collects the referenced Python component
 licenses, unpacks the relocatable interpreter, and installs the locked
 application dependencies using `--only-binary=:all:` and `--require-hashes`.
+The platform-sensitive MLX wheels are installed from exact macOS 14 URLs and
+hashes before the rest of the graph, then their installed `WHEEL` tags are
+verified. Every Mach-O in the resulting runtime is scanned and the build fails
+if any architecture slice requires a macOS release newer than 14.0.
 The exact `uv.lock` and exported hashed requirements are retained with the
 release provenance. The script removes unused Tcl/Tk, SciPy, sounddevice,
 tests, caches, and temporary-path console scripts after a smoke import. It may
 access package indexes while installing that locked, wheel-only dependency
 graph during this release-build step. It never downloads model weights.
+
+Public app builds also require a clean Git worktree and retain the exact source
+commit and tree identifiers in `RELEASE_PROVENANCE/SOURCE_COMMIT.txt`.
 
 MLX-Audio 0.4.5 declares SciPy and SoundDevice unconditionally even though
 Noice City does not call its optional resampler or audio-player paths. After
@@ -107,8 +115,8 @@ For a local ad-hoc test build:
 packaging/macos/build-app.sh \
   --runtime build/macos/runtime \
   --bundle-id com.example.noicecity \
-  --version 0.1.0 \
-  --build 2 \
+  --version 0.1.1 \
+  --build 3 \
   --sign -
 
 packaging/macos/verify-app.sh 'dist/macos/Noice City.app'
@@ -124,8 +132,8 @@ For a public build, use the installed Developer ID identity:
 ```bash
 packaging/macos/build-app.sh \
   --runtime build/macos/runtime \
-  --version 0.1.0 \
-  --build 2 \
+  --version 0.1.1 \
+  --build 3 \
   --sign "Developer ID Application: Ruhitaj Reddypalli (28DPUBPSZD)"
 
 packaging/macos/verify-app.sh --release 'dist/macos/Noice City.app'
@@ -154,10 +162,15 @@ The canonical `assets/branding/NoiceCity.icns` artwork is copied to
 ```bash
 packaging/macos/build-dmg.sh \
   --app 'dist/macos/Noice City.app' \
-  --output dist/macos/Noice-City-0.1.0-arm64.dmg \
+  --output dist/macos/Noice-City-0.1.1-arm64.dmg \
   --volume-name 'Noice City' \
+  --release \
   --sign "Developer ID Application: YOUR NAME (TEAMID1234)"
 ```
+
+`--release` runs the complete public-release verifier on both the source app
+and the copy mounted from the finished DMG. It also rejects an ad-hoc signing
+identity.
 
 The mounted DMG contains the app and an `Applications` symlink for conventional
 drag-to-install behavior.
@@ -179,8 +192,8 @@ other local processes.
 Submit the signed DMG:
 
 ```bash
-packaging/macos/notarize.sh \
-  --dmg dist/macos/Noice-City-0.1.0-arm64.dmg \
+  packaging/macos/notarize.sh \
+  --dmg dist/macos/Noice-City-0.1.1-arm64.dmg \
   --keychain-profile Noice-City-notary
 ```
 
@@ -225,6 +238,8 @@ active.
 - Confirm `LICENSE`, `NOTICE`, `TRADEMARKS.md`, `THIRD_PARTY_NOTICES.md`, and
   `MODEL_NOTICES.md` are present in the application bundle.
 - Produce a clean runtime from the locked dependency graph.
+- Confirm installed MLX wheel tags are exactly `macosx_14_0_arm64` and run the
+  exhaustive Mach-O deployment-target audit over the finished app.
 - Build with a Developer ID identity; never publish an ad-hoc-signed app.
 - Inspect the bundle for local paths and private data.
 - Verify on a clean Apple Silicon user account with no developer tools.

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset PYTHONPATH PYTHONHOME
+export PYTHONNOUSERSITE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
@@ -22,6 +25,12 @@ MLX_AUDIO_MODIFIED_METADATA_SHA256="1ae6206bc3022f2abb5b4314cd0ea4add510a923eada
 TOKENIZERS_LICENSE_SHA256="c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 SENTENCEPIECE_LICENSE_SHA256="cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
 TQDM_LICENSE_SHA256="fcff87c3a47ce8028a8512aa182d4fcf0ad1c90544ee75cf9b343684cac194de"
+TARGET_MACOS_VERSION="14.0"
+MLX_TARGET_PLATFORM="macosx_14_0_arm64"
+MLX_TARGET_WHEEL_URL="https://files.pythonhosted.org/packages/aa/a6/489176d8a2a06137a299910057cc44dc3fccfb73151f7562fea2b75894d9/mlx-0.32.0-cp312-cp312-macosx_14_0_arm64.whl"
+MLX_TARGET_WHEEL_SHA256="ea5a594355c89c0095eaba413fd39d4caa8642fa13432dfb0c9354d141046467"
+MLX_METAL_TARGET_WHEEL_URL="https://files.pythonhosted.org/packages/d6/ef/d74ae99cfe9ddb59fd08abd14f47754c3d199291a93756903fa595b31b8a/mlx_metal-0.32.0-py3-none-macosx_14_0_arm64.whl"
+MLX_METAL_TARGET_WHEEL_SHA256="5b64b20ac24b0c401f489de01e8209edc4d372125201f19314e6f39e385322aa"
 
 PYTHON_ARCHIVE=""
 PYTHON_FULL_ARCHIVE=""
@@ -139,8 +148,8 @@ FULL_PYTHON_ROOT="$STAGING/full/python"
 
 /usr/bin/ditto --noqtn "$RUNTIME_SOURCE" "$STAGING/runtime"
 PYTHON="$STAGING/runtime/bin/python3"
-[[ "$($PYTHON -B -c 'import platform; print(platform.machine())')" == "arm64" ]] || die "runtime is not arm64"
-[[ "$($PYTHON -B -c 'import sys; print(sys.version.split()[0])')" == "3.12.13" ]] || die "runtime is not Python 3.12.13"
+[[ "$($PYTHON -I -B -c 'import platform; print(platform.machine())')" == "arm64" ]] || die "runtime is not arm64"
+[[ "$($PYTHON -I -B -c 'import sys; print(sys.version.split()[0])')" == "3.12.13" ]] || die "runtime is not Python 3.12.13"
 
 RELEASE_ROOT="$STAGING/runtime/share/noice-city/release"
 PROVENANCE_ROOT="$RELEASE_ROOT/python-build-standalone"
@@ -151,7 +160,7 @@ mkdir -p "$DEPENDENCY_PROVENANCE_ROOT" "$RUNTIME_PACKAGE_LICENSE_ROOT"
 
 # Verify that the exact install-only tree being shipped came from the pinned
 # full archive, then collect every component license referenced by PYTHON.json.
-"$PYTHON" -B - \
+"$PYTHON" -I -B - \
   "$RUNTIME_SOURCE" \
   "$FULL_PYTHON_ROOT" \
   "$PROVENANCE_ROOT" \
@@ -275,6 +284,8 @@ if ! /usr/bin/grep -Fq -- '--hash=sha256:' "$STAGING/requirements.txt"; then
 fi
 for reviewed_lock_hash in \
   "$MLX_AUDIO_WHEEL_SHA256" \
+  "$MLX_TARGET_WHEEL_SHA256" \
+  "$MLX_METAL_TARGET_WHEEL_SHA256" \
   473b83b915e547aa366d1eee11806deaf419e17be16310ac0a14077f1e28f917 \
   1e418a55456beedca4621dbab65a318981467a2b188e982a23e117f115ce5001 \
   3d2b5e824b5622038dc7b490897efe05ebbbb9e7350fc142f3ecc8789ef9bdf6 \
@@ -288,9 +299,28 @@ done
 if ! /usr/bin/grep -Fq "$MLX_AUDIO_WHEEL_SHA256" "$STAGING/requirements.txt"; then
   die "exported requirements omit the pinned MLX-Audio wheel hash"
 fi
+for target_wheel_hash in "$MLX_TARGET_WHEEL_SHA256" "$MLX_METAL_TARGET_WHEEL_SHA256"; do
+  if ! /usr/bin/grep -Fq "$target_wheel_hash" "$STAGING/requirements.txt"; then
+    die "exported requirements omit the pinned macOS 14 MLX wheel hash: $target_wheel_hash"
+  fi
+done
 /bin/cp "$PROJECT_ROOT/uv.lock" "$DEPENDENCY_PROVENANCE_ROOT/uv.lock"
 /bin/cp "$STAGING/requirements.txt" "$DEPENDENCY_PROVENANCE_ROOT/requirements.txt"
-"$PYTHON" -m pip install \
+
+# Install the two platform-sensitive MLX distributions first from their exact
+# lock-pinned macOS 14 wheels. A normal host-platform resolution on a newer
+# build Mac would otherwise select that host's wheel and silently raise the
+# finished app's deployment target. The complete hashed requirements install
+# below sees these exact versions as already satisfied.
+"$PYTHON" -I -m pip install \
+  --disable-pip-version-check \
+  --no-compile \
+  --no-deps \
+  --only-binary=:all: \
+  --require-hashes \
+  "mlx @ ${MLX_TARGET_WHEEL_URL}#sha256=${MLX_TARGET_WHEEL_SHA256}" \
+  "mlx-metal @ ${MLX_METAL_TARGET_WHEEL_URL}#sha256=${MLX_METAL_TARGET_WHEEL_SHA256}"
+"$PYTHON" -I -m pip install \
   --disable-pip-version-check \
   --no-compile \
   --only-binary=:all: \
@@ -299,14 +329,57 @@ fi
 
 # VoiceTrainer decodes the PCM WAVs it owns and uses miniaudio for Whisper.
 # It never calls MLX-Audio's optional scipy resampler or sounddevice players.
-SITE_PACKAGES="$($PYTHON -B -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+SITE_PACKAGES="$($PYTHON -I -B -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+
+/usr/bin/printf '%s\n' \
+  "minimum_macos=$TARGET_MACOS_VERSION" \
+  'required_architecture=arm64' \
+  "target_platform=$MLX_TARGET_PLATFORM" \
+  "mlx_url=$MLX_TARGET_WHEEL_URL" \
+  "mlx_sha256=$MLX_TARGET_WHEEL_SHA256" \
+  "mlx_metal_url=$MLX_METAL_TARGET_WHEEL_URL" \
+  "mlx_metal_sha256=$MLX_METAL_TARGET_WHEEL_SHA256" \
+  > "$DEPENDENCY_PROVENANCE_ROOT/MLX_TARGET_WHEELS.txt"
+
+"$PYTHON" -I -B - "$SITE_PACKAGES" "$MLX_TARGET_PLATFORM" <<'PY'
+from __future__ import annotations
+
+import importlib.metadata
+import sys
+from pathlib import Path
+
+site_packages = Path(sys.argv[1]).resolve()
+target_platform = sys.argv[2]
+expected = {
+    "mlx": f"cp312-cp312-{target_platform}",
+    "mlx-metal": f"py3-none-{target_platform}",
+}
+for distribution_name, expected_tag in expected.items():
+    distribution = importlib.metadata.distribution(distribution_name)
+    dist_info = Path(distribution._path).resolve()
+    if site_packages not in dist_info.parents:
+        raise SystemExit(f"{distribution_name} was not installed in the bundled runtime")
+    wheel = dist_info / "WHEEL"
+    if not wheel.is_file():
+        raise SystemExit(f"{distribution_name} WHEEL metadata is missing")
+    tags = [
+        line.removeprefix("Tag: ")
+        for line in wheel.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Tag: ")
+    ]
+    if tags != [expected_tag]:
+        raise SystemExit(
+            f"{distribution_name} has wheel tags {tags!r}, expected {[expected_tag]!r}"
+        )
+print("validated exact macOS 14 MLX wheel tags")
+PY
 
 # tokenizers and sentencepiece publish Apache-2.0 license texts in their source
 # distributions but omit them from the macOS wheels. The repository's own
 # Apache-2.0 LICENSE is byte-for-byte tokenizers' text; sentencepiece's exact
 # text differs only by one leading newline. tqdm does retain its exact LICENCE
 # inside the wheel. Copy and hash all three into an obvious bundle location.
-"$PYTHON" -B - \
+"$PYTHON" -I -B - \
   "$PROJECT_ROOT/LICENSE" \
   "$RUNTIME_PACKAGE_LICENSE_ROOT" \
   "$DEPENDENCY_PROVENANCE_ROOT" \
@@ -397,7 +470,7 @@ PY
 # After pruning those packages, remove exactly those two Requires-Dist lines,
 # update only METADATA's entry in RECORD, and retain a hash-complete audit of
 # the original wheel metadata and the release overlay. No package code changes.
-"$PYTHON" -B - \
+"$PYTHON" -I -B - \
   "$SITE_PACKAGES" \
   "$DEPENDENCY_PROVENANCE_ROOT" \
   "$MLX_AUDIO_WHEEL_URL" \
@@ -499,7 +572,7 @@ overlay = {
 )
 PY
 
-if ! "$PYTHON" -B -m pip check > "$DEPENDENCY_PROVENANCE_ROOT/PIP_CHECK.txt" 2>&1; then
+if ! "$PYTHON" -I -B -m pip check > "$DEPENDENCY_PROVENANCE_ROOT/PIP_CHECK.txt" 2>&1; then
   /bin/cat "$DEPENDENCY_PROVENANCE_ROOT/PIP_CHECK.txt" >&2
   die "pip check failed after the reviewed MLX-Audio metadata overlay"
 fi
@@ -539,10 +612,18 @@ done < <(/usr/bin/find "$STAGING/runtime/bin" -mindepth 1 -maxdepth 1 -print0)
   \( -name '*.pyc' -o -name '*.pyo' -o -name '.DS_Store' \) \
   -type f -delete
 
+# This bundle-wide deployment-target audit is the release gate that prevents a
+# host-specific binary wheel from entering the runtime unnoticed.
+"$SCRIPT_DIR/audit-macho.sh" \
+  --root "$STAGING/runtime" \
+  --maximum-macos "$TARGET_MACOS_VERSION" \
+  --required-arch arm64 \
+  --report "$DEPENDENCY_PROVENANCE_ROOT/MACHO_COMPATIBILITY.txt"
+
 # Record the final post-prune installed distribution set, then checksum every
 # retained dependency input and audit artifact (excluding the checksum file
 # itself). These files are promoted into the app's RELEASE_PROVENANCE.
-"$PYTHON" -B - "$DEPENDENCY_PROVENANCE_ROOT" <<'PY'
+"$PYTHON" -I -B - "$DEPENDENCY_PROVENANCE_ROOT" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -573,7 +654,7 @@ for path in sorted(root.iterdir(), key=lambda item: item.name):
 (root / "SHA256SUMS.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
 PY
 
-"$PYTHON" -B - <<'PY'
+"$PYTHON" -I -B - <<'PY'
 import importlib.util
 
 import fastapi
@@ -600,7 +681,8 @@ fi
 [[ -s "$PROVENANCE_ROOT/SUPPLEMENTAL_LICENSE_PROVENANCE.txt" ]] || die "runtime supplemental license provenance is missing"
 for dependency_provenance in \
   uv.lock requirements.txt INSTALLED_PACKAGES.txt PIP_CHECK.txt \
-  MLX_AUDIO_METADATA_OVERLAY.json RUNTIME_PACKAGE_LICENSES_SHA256.txt \
+  MLX_AUDIO_METADATA_OVERLAY.json MLX_TARGET_WHEELS.txt MACHO_COMPATIBILITY.txt \
+  RUNTIME_PACKAGE_LICENSES_SHA256.txt \
   RUNTIME_PACKAGE_LICENSE_PROVENANCE.txt SHA256SUMS.txt; do
   [[ -s "$DEPENDENCY_PROVENANCE_ROOT/$dependency_provenance" ]] || \
     die "runtime dependency provenance is missing: $dependency_provenance"

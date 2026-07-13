@@ -19,7 +19,11 @@ build/
 session-token
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 *.db
+/manifest.json
+/backups/
 
 # Apple signing and notarization material stays in Keychain or private release
 # storage, never in the public repository.
@@ -44,6 +48,10 @@ session-token
 
 # Voice data, generated audio, model weights, and trained artifacts stay local.
 *.wav
+*.webm
+*.caf
+*.pcm
+*.raw
 *.flac
 *.mp3
 *.m4a
@@ -53,13 +61,24 @@ session-token
 *.ogg
 *.opus
 *.safetensors
+*.bin
 *.gguf
 *.ckpt
 *.pth
 *.pt
+*.pkl
+*.pickle
 *.onnx
 *.npy
 *.npz
+*.whl
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.zst
+*.zst
+*.7z
 /models/
 /recordings/
 /profiles/

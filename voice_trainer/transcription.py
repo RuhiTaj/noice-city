@@ -17,6 +17,12 @@ _LOCK = threading.Lock()
 def normalize_transcript(text: str) -> str:
     text = text.casefold().replace("’", "'")
     text = re.sub(r"[^a-z0-9' ]+", " ", text)
+    # Keep apostrophes only when they are inside a word (for example, "don't").
+    # Quotation marks and possessive trailing apostrophes are punctuation, not
+    # ASR tokens; counting them as words can inflate WER and falsely report that
+    # otherwise complete speech was cut off.
+    text = re.sub(r"(?<![a-z0-9])'+", "", text)
+    text = re.sub(r"'+(?![a-z0-9])", "", text)
     return " ".join(text.split())
 
 

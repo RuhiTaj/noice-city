@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset PYTHONPATH PYTHONHOME
+export PYTHONNOUSERSITE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 APP_NAME="Noice City"
 BUNDLE_ID="com.ruhitaj.noicecity"
-VERSION="0.1.0"
-BUILD_NUMBER="2"
+VERSION="0.1.1"
+BUILD_NUMBER="3"
+MINIMUM_MACOS="14.0"
 RUNTIME_DIR=""
 OUTPUT_DIR="$PROJECT_ROOT/dist/macos"
 DEFAULT_ICON_FILE="$PROJECT_ROOT/assets/branding/NoiceCity.icns"
@@ -95,6 +99,13 @@ mkdir -p "$CONTENTS/MacOS" "$APP_RESOURCES"
 command -v git >/dev/null 2>&1 || die "git is required to enumerate release sources"
 git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
   die "project root is not a Git working tree"
+if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=normal)" ]]; then
+  die "release builds require a clean Git worktree"
+fi
+SOURCE_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse --verify HEAD)"
+SOURCE_TREE="$(git -C "$PROJECT_ROOT" rev-parse --verify 'HEAD^{tree}')"
+[[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ && "$SOURCE_TREE" =~ ^[0-9a-f]{40}$ ]] ||
+  die "could not determine exact Git source provenance"
 TRACKED_SOURCE_COUNT=0
 while IFS= read -r -d '' relative; do
   case "$relative" in
@@ -148,11 +159,14 @@ if ! /usr/bin/find "$RUNTIME_RELEASE/licenses" -type f -print -quit | /usr/bin/g
 fi
 for provenance_file in \
   uv.lock requirements.txt INSTALLED_PACKAGES.txt PIP_CHECK.txt \
-  MLX_AUDIO_METADATA_OVERLAY.json RUNTIME_PACKAGE_LICENSES_SHA256.txt \
+  MLX_AUDIO_METADATA_OVERLAY.json MLX_TARGET_WHEELS.txt MACHO_COMPATIBILITY.txt \
+  RUNTIME_PACKAGE_LICENSES_SHA256.txt \
   RUNTIME_PACKAGE_LICENSE_PROVENANCE.txt SHA256SUMS.txt; do
   [[ -s "$DEPENDENCY_RELEASE/$provenance_file" ]] || \
     die "runtime dependency provenance is missing: $provenance_file"
 done
+/usr/bin/cmp -s "$PROJECT_ROOT/uv.lock" "$DEPENDENCY_RELEASE/uv.lock" ||
+  die "prepared runtime uv.lock differs from the clean source tree; rebuild the runtime"
 if ! /usr/bin/find "$RUNTIME_PACKAGE_LICENSE_RELEASE" -type f -print -quit | /usr/bin/grep -q .; then
   die "runtime package license set is empty"
 fi
@@ -161,6 +175,13 @@ mkdir -p \
   "$RESOURCES/THIRD_PARTY_LICENSES/runtime-packages" \
   "$RESOURCES/RELEASE_PROVENANCE/python-build-standalone" \
   "$RESOURCES/RELEASE_PROVENANCE/runtime-dependencies"
+/usr/bin/printf '%s\n' \
+  'schema_version=1' \
+  'repository=https://github.com/RuhiTaj/noice-city' \
+  "commit=$SOURCE_COMMIT" \
+  "tree=$SOURCE_TREE" \
+  'worktree_clean=true' \
+  > "$RESOURCES/RELEASE_PROVENANCE/SOURCE_COMMIT.txt"
 /usr/bin/ditto --noqtn \
   "$RUNTIME_RELEASE/licenses" \
   "$RESOURCES/THIRD_PARTY_LICENSES/python-build-standalone"
@@ -183,7 +204,7 @@ done
 /bin/chmod 755 "$RESOURCES/NoiceCity.launcher"
 /usr/bin/xcrun --sdk macosx clang \
   -arch arm64 \
-  -mmacosx-version-min=26.2 \
+  -mmacosx-version-min="$MINIMUM_MACOS" \
   -Os -Wall -Wextra -Werror \
   "$SCRIPT_DIR/templates/NoiceCityLauncher.c" \
   -o "$CONTENTS/MacOS/NoiceCity"
@@ -194,6 +215,7 @@ PLIST_BUDDY=/usr/libexec/PlistBuddy
 "$PLIST_BUDDY" -c "Set :CFBundleIdentifier $BUNDLE_ID" "$CONTENTS/Info.plist"
 "$PLIST_BUDDY" -c "Set :CFBundleShortVersionString $VERSION" "$CONTENTS/Info.plist"
 "$PLIST_BUDDY" -c "Set :CFBundleVersion $BUILD_NUMBER" "$CONTENTS/Info.plist"
+"$PLIST_BUDDY" -c "Set :LSMinimumSystemVersion $MINIMUM_MACOS" "$CONTENTS/Info.plist"
 
 if [[ -n "$ICON_FILE" ]]; then
   /bin/cp "$ICON_FILE" "$RESOURCES/AppIcon.icns"
@@ -227,10 +249,15 @@ if /usr/bin/find "$APP_RESOURCES/assets" -mindepth 1 \
   die "an unallowlisted source asset entered the application bundle"
 fi
 
-RUNTIME_MACHINE="$("$RESOURCES/runtime/bin/python3" -B -c 'import platform; print(platform.machine())')"
+RUNTIME_MACHINE="$("$RESOURCES/runtime/bin/python3" -I -B -c 'import platform; print(platform.machine())')"
 [[ "$RUNTIME_MACHINE" == "arm64" ]] || die "runtime is $RUNTIME_MACHINE, expected arm64"
-RUNTIME_VERSION="$("$RESOURCES/runtime/bin/python3" -B -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+RUNTIME_VERSION="$("$RESOURCES/runtime/bin/python3" -I -B -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 [[ "$RUNTIME_VERSION" == "3.12" ]] || die "runtime is Python $RUNTIME_VERSION, expected 3.12"
+
+"$SCRIPT_DIR/audit-macho.sh" \
+  --root "$STAGING/$APP_NAME.app" \
+  --maximum-macos "$MINIMUM_MACOS" \
+  --required-arch arm64
 
 if /usr/bin/find "$STAGING/$APP_NAME.app" -type d -name '__pycache__' -print -quit | /usr/bin/grep -q .; then
   die "runtime validation wrote bytecode into the staged bundle"

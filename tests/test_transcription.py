@@ -11,11 +11,14 @@ from voice_trainer.transcription import (
 
 def test_normalize_transcript() -> None:
     assert normalize_transcript("Hello,  WORLD!") == "hello world"
+    assert normalize_transcript("She said, 'Don't leave.'") == "she said don't leave"
+    assert normalize_transcript("The teachers' room") == "the teachers room"
 
 
 def test_word_error_rate() -> None:
     assert word_error_rate("one two three", "one two three") == 0.0
     assert word_error_rate("one two three", "one four three") == 1 / 3
+    assert word_error_rate("She said, 'Wait here.'", "She said wait here") == 0.0
 
 
 def test_whisper_audio_is_locally_decoded_to_16khz_mono(tmp_path) -> None:

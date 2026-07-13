@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset PYTHONPATH PYTHONHOME
+export PYTHONNOUSERSITE=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APP=""
 RELEASE_MODE=0
+MAXIMUM_MACOS="14.0"
 
 usage() {
   cat >&2 <<'EOF'
@@ -56,6 +60,10 @@ if [[ ! -d "$APP/Contents" ]]; then
   exit 64
 fi
 
+# All subsequent checks change directories while validating checksum manifests.
+# Canonicalize once so documented relative paths remain valid throughout.
+APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
+
 require_file() {
   [[ -f "$1" ]] || die "required file is missing: ${1#$APP/}"
 }
@@ -68,6 +76,51 @@ require_dir() {
   [[ -d "$1" ]] || die "required directory is missing: ${1#$APP/}"
 }
 
+# The runtime intentionally contains a small number of relative convenience
+# links (for example, python -> python3.12). Never allow a packaged link to
+# escape the signed bundle or depend on a release-machine absolute path.
+while IFS= read -r -d '' link_path; do
+  link_target="$(/usr/bin/readlink "$link_path")" ||
+    die "could not read packaged symlink: ${link_path#$APP/}"
+  [[ -n "$link_target" ]] ||
+    die "packaged symlink has an empty target: ${link_path#$APP/}"
+  [[ "$link_target" != /* ]] ||
+    die "packaged symlink has an absolute target: ${link_path#$APP/} -> $link_target"
+  case "/$link_target/" in
+    */../*)
+      die "packaged symlink traverses a parent directory: ${link_path#$APP/} -> $link_target"
+      ;;
+  esac
+done < <(/usr/bin/find "$APP/Contents" -type l -print0)
+
+verify_release_signature() {
+  local candidate="$1"
+  local signature_details
+  local entitlements
+
+  signature_details="$(/usr/bin/codesign -d --verbose=4 "$candidate" 2>&1)" ||
+    die "could not read release signature: ${candidate#$APP/}"
+  /usr/bin/grep -Fqx "Authority=$EXPECTED_AUTHORITY" <<<"$signature_details" ||
+    die "release signature has the wrong Developer ID authority: ${candidate#$APP/}"
+  /usr/bin/grep -Fqx "TeamIdentifier=$EXPECTED_TEAM_ID" <<<"$signature_details" ||
+    die "release signature has the wrong team identifier: ${candidate#$APP/}"
+  /usr/bin/grep -Eq '^CodeDirectory .*flags=.*\(runtime\)' <<<"$signature_details" ||
+    die "release signature is missing the hardened runtime: ${candidate#$APP/}"
+  if ! /usr/bin/grep -Eq '^Timestamp=.+$' <<<"$signature_details" ||
+      /usr/bin/grep -Fqx 'Timestamp=none' <<<"$signature_details"; then
+    die "release signature is missing a secure timestamp: ${candidate#$APP/}"
+  fi
+
+  entitlements="$(/usr/bin/codesign -d --entitlements - "$candidate" 2>/dev/null)" ||
+    die "could not inspect release entitlements: ${candidate#$APP/}"
+  if [[ -n "$entitlements" ]]; then
+    if /usr/bin/grep -Fq 'com.apple.security.cs.allow-jit' <<<"$entitlements"; then
+      die "release signature unexpectedly grants allow-jit: ${candidate#$APP/}"
+    fi
+    die "release signature contains unexpected entitlements: ${candidate#$APP/}"
+  fi
+}
+
 CONTENTS="$APP/Contents"
 RESOURCES="$CONTENTS/Resources"
 PLIST="$CONTENTS/Info.plist"
@@ -77,6 +130,7 @@ APP_ROOT="$RESOURCES/app"
 PYTHON_PROVENANCE="$RESOURCES/RELEASE_PROVENANCE/python-build-standalone"
 PYTHON_LICENSES="$RESOURCES/THIRD_PARTY_LICENSES/python-build-standalone"
 DEPENDENCY_PROVENANCE="$RESOURCES/RELEASE_PROVENANCE/runtime-dependencies"
+SOURCE_PROVENANCE="$RESOURCES/RELEASE_PROVENANCE/SOURCE_COMMIT.txt"
 RUNTIME_PACKAGE_LICENSES="$RESOURCES/THIRD_PARTY_LICENSES/runtime-packages"
 
 /usr/bin/plutil -lint "$PLIST"
@@ -92,9 +146,9 @@ require_file "$APP_ROOT/assets/prompts.json"
 if [[ "$RELEASE_MODE" == "1" ]]; then
   EXPECTED_PRODUCT_NAME="Noice City"
   EXPECTED_BUNDLE_ID="com.ruhitaj.noicecity"
-  EXPECTED_VERSION="0.1.0"
-  EXPECTED_BUILD="2"
-  EXPECTED_MINIMUM_OS="26.2"
+  EXPECTED_VERSION="0.1.1"
+  EXPECTED_BUILD="3"
+  EXPECTED_MINIMUM_OS="$MAXIMUM_MACOS"
   EXPECTED_TEAM_ID="28DPUBPSZD"
   EXPECTED_AUTHORITY="Developer ID Application: Ruhitaj Reddypalli (28DPUBPSZD)"
   CANONICAL_ICON="$PROJECT_ROOT/assets/branding/NoiceCity.icns"
@@ -137,9 +191,46 @@ if [[ "$RELEASE_MODE" == "1" ]]; then
     die "native launcher architectures are '$LAUNCHER_ARCHS', expected 'arm64'"
 fi
 
+# Verify the complete code-signature envelope before executing anything from
+# the bundle. Runtime import checks below are meaningful only after this trust
+# boundary has passed.
+APP_IS_SIGNED=0
+if /usr/bin/codesign -d "$APP" >/dev/null 2>&1; then
+  APP_IS_SIGNED=1
+  while IFS= read -r -d '' candidate; do
+    if /usr/bin/file -b "$candidate" | /usr/bin/grep -q 'Mach-O'; then
+      /usr/bin/codesign --verify --strict --verbose=2 "$candidate"
+      if [[ "$RELEASE_MODE" == "1" ]]; then
+        verify_release_signature "$candidate"
+      fi
+    fi
+  done < <(/usr/bin/find "$CONTENTS" -type f -print0)
+  /usr/bin/codesign --verify --strict --verbose=2 "$APP"
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+  if [[ "$RELEASE_MODE" == "1" ]]; then
+    verify_release_signature "$APP"
+  fi
+fi
+
+if [[ "$APP_IS_SIGNED" != "1" ]]; then
+  die "app is unsigned; local verification requires at least an ad-hoc signature"
+fi
+
 for notice_file in LICENSE NOTICE TRADEMARKS.md THIRD_PARTY_NOTICES.md MODEL_NOTICES.md; do
   require_nonempty_file "$RESOURCES/$notice_file"
 done
+require_nonempty_file "$SOURCE_PROVENANCE"
+for source_line in \
+  'schema_version=1' \
+  'repository=https://github.com/RuhiTaj/noice-city' \
+  'worktree_clean=true'; do
+  /usr/bin/grep -Fqx "$source_line" "$SOURCE_PROVENANCE" ||
+    die "source provenance is missing: $source_line"
+done
+SOURCE_COMMIT="$(/usr/bin/awk -F= '$1 == "commit" { print $2 }' "$SOURCE_PROVENANCE")"
+SOURCE_TREE="$(/usr/bin/awk -F= '$1 == "tree" { print $2 }' "$SOURCE_PROVENANCE")"
+[[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ && "$SOURCE_TREE" =~ ^[0-9a-f]{40}$ ]] ||
+  die "source provenance has invalid Git object identifiers"
 for provenance_file in \
   PYTHON.json ARCHIVE_SHA256S.txt LICENSES_SHA256.txt SUPPLEMENTAL_LICENSE_PROVENANCE.txt; do
   require_nonempty_file "$PYTHON_PROVENANCE/$provenance_file"
@@ -150,10 +241,15 @@ if ! /usr/bin/find "$PYTHON_LICENSES" -type f -print -quit | /usr/bin/grep -q .;
 fi
 for provenance_file in \
   uv.lock requirements.txt INSTALLED_PACKAGES.txt PIP_CHECK.txt \
-  MLX_AUDIO_METADATA_OVERLAY.json RUNTIME_PACKAGE_LICENSES_SHA256.txt \
+  MLX_AUDIO_METADATA_OVERLAY.json MLX_TARGET_WHEELS.txt MACHO_COMPATIBILITY.txt \
+  RUNTIME_PACKAGE_LICENSES_SHA256.txt \
   RUNTIME_PACKAGE_LICENSE_PROVENANCE.txt SHA256SUMS.txt; do
   require_nonempty_file "$DEPENDENCY_PROVENANCE/$provenance_file"
 done
+EXPECTED_MACHO_REPORT_HEADER=$'path\tarchitectures\tslice\tplatform\tminimum_macos\tsdk'
+[[ "$(/usr/bin/head -n 1 "$DEPENDENCY_PROVENANCE/MACHO_COMPATIBILITY.txt")" == \
+    "$EXPECTED_MACHO_REPORT_HEADER" ]] ||
+  die "retained Mach-O compatibility report has an unexpected schema"
 require_dir "$RUNTIME_PACKAGE_LICENSES"
 if ! /usr/bin/find "$RUNTIME_PACKAGE_LICENSES" -type f -print -quit | /usr/bin/grep -q .; then
   die "runtime package licenses are empty"
@@ -197,6 +293,8 @@ for exact_license in \
 done
 for pinned_dependency_evidence in \
   '1c5aae197285ecfda39cc3048f19f3c56ab22c8ac2dfa21d79ca6c7f37418ca7' \
+  'ea5a594355c89c0095eaba413fd39d4caa8642fa13432dfb0c9354d141046467' \
+  '5b64b20ac24b0c401f489de01e8209edc4d372125201f19314e6f39e385322aa' \
   '473b83b915e547aa366d1eee11806deaf419e17be16310ac0a14077f1e28f917' \
   '3d2b5e824b5622038dc7b490897efe05ebbbb9e7350fc142f3ecc8789ef9bdf6' \
   '19829c9673638f2a0b8617da4cdcb927e831cd88bcfcb6e78d42a4d1af131520'; do
@@ -210,7 +308,18 @@ fi
 if ! /usr/bin/grep -Fqx 'No broken requirements found.' "$DEPENDENCY_PROVENANCE/PIP_CHECK.txt"; then
   die "retained pip check result is not successful"
 fi
+for target_wheel_line in \
+  'minimum_macos=14.0' \
+  'required_architecture=arm64' \
+  'target_platform=macosx_14_0_arm64' \
+  'mlx_sha256=ea5a594355c89c0095eaba413fd39d4caa8642fa13432dfb0c9354d141046467' \
+  'mlx_metal_sha256=5b64b20ac24b0c401f489de01e8209edc4d372125201f19314e6f39e385322aa'; do
+  if ! /usr/bin/grep -Fqx "$target_wheel_line" "$DEPENDENCY_PROVENANCE/MLX_TARGET_WHEELS.txt"; then
+    die "macOS 14 MLX target provenance is incomplete: $target_wheel_line"
+  fi
+done
 for installed_package in \
+  'fastapi==0.139.0' 'python-multipart==0.0.32' 'starlette==1.3.1' \
   'mlx-audio==0.4.5' 'mlx-lm==0.31.3' 'mlx==0.32.0' \
   'sentencepiece==0.2.2' 'tokenizers==0.22.2' 'tqdm==4.68.4'; do
   if ! /usr/bin/grep -Fqx "$installed_package" "$DEPENDENCY_PROVENANCE/INSTALLED_PACKAGES.txt"; then
@@ -229,8 +338,8 @@ if /usr/bin/find "$APP_ROOT/assets" -mindepth 1 \
   die "unallowlisted repository asset is present in the app bundle"
 fi
 
-RUNTIME_MACHINE="$("$RUNTIME" -B -c 'import platform; print(platform.machine())')"
-RUNTIME_VERSION="$("$RUNTIME" -B -c 'import sys; print(sys.version.split()[0])')"
+RUNTIME_MACHINE="$("$RUNTIME" -I -B -c 'import platform; print(platform.machine())')"
+RUNTIME_VERSION="$("$RUNTIME" -I -B -c 'import sys; print(sys.version.split()[0])')"
 [[ "$RUNTIME_MACHINE" == "arm64" ]] || die "bundled runtime is $RUNTIME_MACHINE, expected arm64"
 [[ "$RUNTIME_VERSION" == "3.12.13" ]] || die "bundled runtime is Python $RUNTIME_VERSION, expected 3.12.13"
 
@@ -284,7 +393,7 @@ if /usr/bin/find "$CONTENTS" -type f \
   die "bytecode or filesystem cache is present in the app bundle"
 fi
 
-SITE_PACKAGES="$("$RUNTIME" -B -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+SITE_PACKAGES="$("$RUNTIME" -I -B -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 for pruned_path in \
   "$SITE_PACKAGES/scipy" \
   "$SITE_PACKAGES/sounddevice.py" \
@@ -333,7 +442,7 @@ for leaked_value in "${LEAKED_VALUES[@]}"; do
   fi
 done
 
-NOICE_VERIFY_RESOURCES="$RESOURCES" "$RUNTIME" -B - <<'PY'
+NOICE_VERIFY_RESOURCES="$RESOURCES" "$RUNTIME" -I -B - <<'PY'
 import base64
 import hashlib
 import importlib.util
@@ -445,64 +554,37 @@ retained_inventory = (dependency_provenance / "INSTALLED_PACKAGES.txt").read_tex
 )
 if current_inventory != retained_inventory:
     raise SystemExit("current installed package inventory differs from release provenance")
+expected_wheel_tags = {
+    "mlx": "cp312-cp312-macosx_14_0_arm64",
+    "mlx-metal": "py3-none-macosx_14_0_arm64",
+}
+for distribution_name, expected_tag in expected_wheel_tags.items():
+    distribution = importlib.metadata.distribution(distribution_name)
+    wheel_path = Path(distribution._path) / "WHEEL"
+    if not wheel_path.is_file():
+        raise SystemExit(f"{distribution_name} WHEEL metadata is missing")
+    tags = [
+        line.removeprefix("Tag: ")
+        for line in wheel_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Tag: ")
+    ]
+    if tags != [expected_tag]:
+        raise SystemExit(
+            f"{distribution_name} has wheel tags {tags!r}, expected {[expected_tag]!r}"
+        )
 for pruned in ("scipy", "sounddevice", "tkinter", "idlelib"):
     if importlib.util.find_spec(pruned) is not None:
         raise SystemExit(f"pruned package remains importable: {pruned}")
 print("validated bundled imports")
 PY
 
-PIP_CHECK_RESULT="$("$RUNTIME" -B -m pip check)"
+PIP_CHECK_RESULT="$("$RUNTIME" -I -B -m pip check)"
 [[ "$PIP_CHECK_RESULT" == 'No broken requirements found.' ]] || \
   die "bundled runtime fails pip check: $PIP_CHECK_RESULT"
 
-verify_release_signature() {
-  local candidate="$1"
-  local signature_details
-  local entitlements
-
-  signature_details="$(/usr/bin/codesign -d --verbose=4 "$candidate" 2>&1)" ||
-    die "could not read release signature: ${candidate#$APP/}"
-  /usr/bin/grep -Fqx "Authority=$EXPECTED_AUTHORITY" <<<"$signature_details" ||
-    die "release signature has the wrong Developer ID authority: ${candidate#$APP/}"
-  /usr/bin/grep -Fqx "TeamIdentifier=$EXPECTED_TEAM_ID" <<<"$signature_details" ||
-    die "release signature has the wrong team identifier: ${candidate#$APP/}"
-  /usr/bin/grep -Eq '^CodeDirectory .*flags=.*\(runtime\)' <<<"$signature_details" ||
-    die "release signature is missing the hardened runtime: ${candidate#$APP/}"
-  if ! /usr/bin/grep -Eq '^Timestamp=.+$' <<<"$signature_details" ||
-      /usr/bin/grep -Fqx 'Timestamp=none' <<<"$signature_details"; then
-    die "release signature is missing a secure timestamp: ${candidate#$APP/}"
-  fi
-
-  entitlements="$(/usr/bin/codesign -d --entitlements - "$candidate" 2>/dev/null)" ||
-    die "could not inspect release entitlements: ${candidate#$APP/}"
-  if [[ -n "$entitlements" ]]; then
-    if /usr/bin/grep -Fq 'com.apple.security.cs.allow-jit' <<<"$entitlements"; then
-      die "release signature unexpectedly grants allow-jit: ${candidate#$APP/}"
-    fi
-    die "release signature contains unexpected entitlements: ${candidate#$APP/}"
-  fi
-}
-
-APP_IS_SIGNED=0
-if /usr/bin/codesign -d "$APP" >/dev/null 2>&1; then
-  APP_IS_SIGNED=1
-  while IFS= read -r -d '' candidate; do
-    if /usr/bin/file -b "$candidate" | /usr/bin/grep -q 'Mach-O'; then
-      /usr/bin/codesign --verify --strict --verbose=2 "$candidate"
-      if [[ "$RELEASE_MODE" == "1" ]]; then
-        verify_release_signature "$candidate"
-      fi
-    fi
-  done < <(/usr/bin/find "$CONTENTS" -type f -print0)
-  /usr/bin/codesign --verify --strict --verbose=2 "$APP"
-  /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
-  if [[ "$RELEASE_MODE" == "1" ]]; then
-    verify_release_signature "$APP"
-  fi
-fi
-
-if [[ "$RELEASE_MODE" == "1" && "$APP_IS_SIGNED" != "1" ]]; then
-  die "public release app is unsigned"
-fi
+"$SCRIPT_DIR/audit-macho.sh" \
+  --root "$CONTENTS" \
+  --maximum-macos "$MAXIMUM_MACOS" \
+  --required-arch arm64
 
 echo "Verified: $APP"
