@@ -15,6 +15,34 @@ independent. Inference loads one variant artifact, installs its embedding in
 slot `3000`, switches Qwen to `custom_voice`, and generates from text with no
 reference recording.
 
+## Current development preview
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/generate.png"><img src="docs/screenshots/generate.png" alt="Noice City reference-free speech generation interface"></a><br>
+      <sub><strong>Generate locally:</strong> write text and hear it in a persistent trained voice with reproducible controls.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/record.png"><img src="docs/screenshots/record.png" alt="Noice City guided voice recording interface"></a><br>
+      <sub><strong>Build a private dataset:</strong> record guided prompts and natural answers entirely on your Mac.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/train.png"><img src="docs/screenshots/train.png" alt="Noice City local voice training and checkpoint interface"></a><br>
+      <sub><strong>Train and compare:</strong> freeze datasets, preserve checkpoints, and run blinded A/B evaluations.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/voice-variants.png"><img src="docs/screenshots/voice-variants.png" alt="Noice City independent voice variant manager"></a><br>
+      <sub><strong>Keep styles separate:</strong> use independent voice lineages for accents, contexts, and delivery styles.</sub>
+    </td>
+  </tr>
+</table>
+
+These screenshots show the current local development interface. The packaged
+release will carry the Noice City application branding.
+
 All private state is stored under:
 
 ```text
