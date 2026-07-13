@@ -1,0 +1,56 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Local credentials and application state must never enter source control.
+session-token
+*.sqlite
+*.sqlite3
+*.db
+
+# Apple signing and notarization material stays in Keychain or private release
+# storage, never in the public repository.
+*.cer
+*.crt
+*.p12
+*.pfx
+*.pem
+*.key
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.notary.json
+*.notary-log.json
+
+# Keep the original high-resolution brand master private; the repository ships
+# only the app-ready official assets covered by TRADEMARKS.md.
+/assets/branding/noice-city-original.png
+
+# Voice data, generated audio, model weights, and trained artifacts stay local.
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.safetensors
+*.gguf
+/models/
+/recordings/
+/profiles/
+/datasets/
+/adapters/
+/checkpoints/
+/evaluations/
+/generations/

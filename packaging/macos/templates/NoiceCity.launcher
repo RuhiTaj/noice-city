@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve every path relative to this bundle. No build-machine path may be
+# embedded in the distributed application.
+MACOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONTENTS_DIR="$(cd "$MACOS_DIR/.." && pwd)"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+APP_DIR="$RESOURCES_DIR/app"
+RUNTIME_DIR="$RESOURCES_DIR/runtime"
+PYTHON="$RUNTIME_DIR/bin/python3"
+
+SUPPORT_DIR="$HOME/Library/Application Support/VoiceTrainer"
+LOG_DIR="$HOME/Library/Logs/VoiceTrainer"
+TOKEN_FILE="$SUPPORT_DIR/session-token"
+HOST="127.0.0.1"
+PORT="8787"
+
+umask 077
+mkdir -p "$SUPPORT_DIR" "$LOG_DIR"
+chmod 700 "$SUPPORT_DIR" "$LOG_DIR"
+
+if [[ ! -f "$TOKEN_FILE" ]] || ! grep -Eq '^[a-f0-9]{64}$' "$TOKEN_FILE"; then
+  /usr/bin/openssl rand -hex 32 > "$TOKEN_FILE.tmp"
+  /bin/mv -f "$TOKEN_FILE.tmp" "$TOKEN_FILE"
+fi
+chmod 600 "$TOKEN_FILE"
+SESSION_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+URL="http://$HOST:$PORT/#$SESSION_TOKEN"
+
+if [[ ! -x "$PYTHON" ]]; then
+  /usr/bin/osascript -e 'display alert "Noice City could not start" message "The bundled runtime is missing or damaged. Reinstall Noice City." as critical' || true
+  exit 70
+fi
+
+# A development copy and the packaged app intentionally share the same private
+# session token. If Noice City is already listening, leave it untouched and
+# bring its browser UI forward instead of attempting to replace it.
+if /usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  if /usr/bin/curl --fail --silent --show-error \
+    --max-time 2 \
+    --header "X-VoiceTrainer-Session: $SESSION_TOKEN" \
+    "http://$HOST:$PORT/api/status" >/dev/null 2>&1; then
+    /usr/bin/open "$URL" >/dev/null 2>&1 || true
+    exit 0
+  fi
+  /usr/bin/osascript -e 'display alert "Noice City could not start" message "Another application is already using local port 8787." as critical' || true
+  exit 69
+fi
+
+# Normal application execution is offline. A first-run installer may explicitly
+# enable network access only in its dedicated, user-initiated download process.
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_DISABLE_TELEMETRY=1
+export DO_NOT_TRACK=1
+export NO_PROXY=127.0.0.1,localhost
+unset HF_TOKEN HUGGING_FACE_HUB_TOKEN OPENAI_API_KEY HTTP_PROXY HTTPS_PROXY ALL_PROXY
+
+export VOICETRAINER_SESSION_TOKEN="$SESSION_TOKEN"
+export PYTHONNOUSERSITE=1
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$APP_DIR"
+
+cd "$APP_DIR"
+exec >>"$LOG_DIR/launcher.log" 2>&1
+echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') starting Noice City"
+
+(
+  /bin/sleep 1
+  /usr/bin/open "$URL" >/dev/null 2>&1 || true
+) &
+
+exec "$PYTHON" -m uvicorn voice_trainer.app:app --host "$HOST" --port "$PORT"

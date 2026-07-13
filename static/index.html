@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; media-src 'self' blob:; worker-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    >
+    <title>Noice City</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/branding/favicon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/branding/apple-touch-icon.png">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#record" aria-label="Noice City home">
+          <img class="brand-mark" src="/static/branding/noice-city-icon.png" alt="" aria-hidden="true">
+          <span>
+            <strong>Noice City</strong>
+            <small>Local Voice Studio</small>
+          </span>
+        </a>
+
+        <section class="variant-switcher" aria-labelledby="variant-switcher-label">
+          <div class="variant-switcher-heading">
+            <label id="variant-switcher-label" for="variant-select">Voice variant</label>
+            <span class="variant-lock" title="Recordings stay pinned to this variant" aria-label="Variant-pinned data">Pinned</span>
+          </div>
+          <select id="variant-select" aria-describedby="variant-switcher-help">
+            <option value="">Loading variants…</option>
+          </select>
+          <p id="variant-switcher-help">Record, review, train, and generate inside one voice lineage.</p>
+          <button class="variant-manage-button" id="manage-variants" type="button">Create or manage</button>
+        </section>
+
+        <nav class="nav" aria-label="Studio sections">
+          <button class="nav-item active" type="button" data-view="record">
+            <span class="nav-icon" aria-hidden="true">01</span>
+            <span><strong>Record</strong><small>Build your dataset</small></span>
+          </button>
+          <button class="nav-item" type="button" data-view="review">
+            <span class="nav-icon" aria-hidden="true">02</span>
+            <span><strong>Review</strong><small>Approve your takes</small></span>
+            <span class="nav-count" id="review-count" hidden>0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="train">
+            <span class="nav-icon" aria-hidden="true">03</span>
+            <span><strong>Train</strong><small>Create a checkpoint</small></span>
+          </button>
+          <button class="nav-item" type="button" data-view="generate">
+            <span class="nav-icon" aria-hidden="true">04</span>
+            <span><strong>Generate</strong><small>Use your trained voice</small></span>
+          </button>
+        </nav>
+
+        <div class="privacy-card">
+          <span class="privacy-dot" aria-hidden="true"></span>
+          <div>
+            <strong>Local and private</strong>
+            <p>Audio and models stay on this Mac.</p>
+          </div>
+        </div>
+
+        <div class="system-status" id="system-status">
+          <span class="status-light checking" aria-hidden="true"></span>
+          <span><strong>Checking model</strong><small>127.0.0.1 only</small></span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="mobile-topbar">
+          <a class="brand compact" href="#record" aria-label="Noice City home"><img class="brand-mark" src="/static/branding/noice-city-icon.png" alt="" aria-hidden="true"><strong>Noice City</strong></a>
+          <div class="mobile-variant-control">
+            <label class="visually-hidden" for="mobile-variant-select">Voice variant</label>
+            <select id="mobile-variant-select"><option value="">Loading…</option></select>
+            <button id="manage-variants-mobile" type="button" aria-label="Create or manage voice variants">Manage</button>
+          </div>
+          <span class="local-pill"><span></span>Local</span>
+        </div>
+
+        <section class="view active" id="record-view" data-view-panel="record">
+          <header class="page-header">
+            <div>
+              <p class="eyebrow">Dataset collection</p>
+              <p class="variant-context">Recording for <strong id="recording-variant-name">no variant selected</strong></p>
+              <h1>Teach the model your voice.</h1>
+              <p>Read naturally. A few careful sessions are more valuable than one long take.</p>
+            </div>
+            <div class="collection-progress" aria-label="Recording collection progress">
+              <div class="ring" id="collection-ring"><span id="accepted-minutes">0</span><small>min</small></div>
+              <div><strong id="collection-target-label">0 of 30 minutes</strong><small>30 minimum · 60 recommended</small></div>
+            </div>
+          </header>
+
+          <div class="record-grid">
+            <article class="panel recorder-panel">
+              <div class="panel-heading">
+                <div class="segmented" role="group" aria-label="Prompt type">
+                  <button class="active" type="button" data-prompt-kind="hybrid">Recommended mix</button>
+                  <button type="button" data-prompt-kind="guided">Guided reading</button>
+                  <button type="button" data-prompt-kind="interview">Interview</button>
+                  <button class="locked" id="custom-script-mode" type="button" data-prompt-kind="custom" aria-disabled="true" title="Unlocks after 2 approved minutes">
+                    My script <span id="custom-script-lock" aria-hidden="true">● 2 min</span>
+                  </button>
+                </div>
+                <span class="take-number" id="prompt-position">Next prompt</span>
+              </div>
+
+              <section class="custom-script-panel" id="custom-script-panel" hidden>
+                <div class="custom-script-intro">
+                  <span class="custom-script-glyph" aria-hidden="true">Aa</span>
+                  <div>
+                    <span class="prompt-label">Your words, your delivery</span>
+                    <h2 id="custom-script-title">Record your own script</h2>
+                    <p id="custom-script-helper">Paste English narration below. These takes are supplemental training-only; keep using Recommended mix for broad voice and held-out coverage.</p>
+                  </div>
+                </div>
+                <div class="custom-script-complete" id="custom-script-complete" hidden>
+                  <span aria-hidden="true">✓</span>
+                  <p><strong>Script complete.</strong> Paste another script below or switch back to guided prompts.</p>
+                </div>
+                <label class="custom-script-field" for="custom-script-text">
+                  <span>Script</span>
+                  <textarea id="custom-script-text" maxlength="20000" placeholder="Paste the narration you want to practice in your own voice…"></textarea>
+                </label>
+                <div class="custom-script-footer">
+                  <small><b id="custom-script-count">0</b> / 20,000 characters</small>
+                  <button class="button primary" id="save-custom-script" type="button" disabled>Save &amp; start recording</button>
+                </div>
+              </section>
+
+              <div class="prompt-card" id="prompt-card">
+                <span class="prompt-label" id="prompt-label">Read this naturally</span>
+                <blockquote id="prompt-text">Loading your next prompt…</blockquote>
+                <p class="delivery-note" id="delivery-note">Use your everyday speaking voice and leave a short pause at the end.</p>
+              </div>
+
+              <div class="recorder" id="recorder">
+                <div class="meter-wrap" aria-label="Microphone input level">
+                  <canvas id="input-meter" width="720" height="96"></canvas>
+                  <div class="meter-center" aria-hidden="true"></div>
+                </div>
+                <p class="record-state" id="record-state">Ready when you are</p>
+                <div class="record-controls">
+                  <button class="round-button secondary" id="skip-prompt" type="button" aria-label="Skip prompt">↷</button>
+                  <button class="record-button" id="record-button" type="button" aria-label="Start recording" aria-keyshortcuts="Space">
+                    <span class="record-button-inner"></span>
+                  </button>
+                  <button class="round-button secondary" id="monitor-button" type="button" aria-label="Check microphone">⌁</button>
+                </div>
+                <small class="record-hint" id="record-hint">Press the red button to begin</small>
+                <div class="shortcut-hints" aria-label="Recording keyboard shortcuts">
+                  <span><kbd>Space</kbd> start / stop</span>
+                  <span><kbd>Enter</kbd> save take</span>
+                  <span><kbd>Esc</kbd> discard take</span>
+                </div>
+              </div>
+
+              <div class="take-preview" id="take-preview" hidden>
+                <div class="take-preview-heading">
+                  <div><strong>Your take</strong><small id="take-duration">0:00</small></div>
+                  <span class="qa-pill pending" id="take-qa">Ready to review</span>
+                </div>
+                <audio id="take-audio" controls preload="metadata"></audio>
+                <div class="button-row">
+                  <button class="button secondary" id="discard-take" type="button" aria-keyshortcuts="Escape">Record again</button>
+                  <button class="button primary" id="save-take" type="button" aria-keyshortcuts="Enter">Save take</button>
+                </div>
+              </div>
+            </article>
+
+            <aside class="record-aside">
+              <article class="panel session-card">
+                <div class="session-card-heading">
+                  <div><span class="card-kicker">This session</span><small id="recording-session-label">Waiting for a variant</small></div>
+                  <button class="button secondary compact" id="new-recording-session" type="button">New session</button>
+                </div>
+                <div class="session-stat"><strong id="session-takes">0</strong><span>takes saved</span></div>
+                <div class="session-stat"><strong id="session-time">0:00</strong><span>recorded</span></div>
+                <hr>
+                <div class="mix-row"><span>Guided</span><strong id="guided-mix">80%</strong></div>
+                <div class="mix-bar"><span id="guided-mix-bar"></span></div>
+                <div class="mix-row"><span>Interview</span><strong id="interview-mix">20%</strong></div>
+              </article>
+              <article class="tip-card">
+                <span aria-hidden="true">✦</span>
+                <div><strong>For a clean recording</strong><p>Stay 15–20 cm from the mic, keep the room quiet, and speak at a comfortable volume.</p></div>
+              </article>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="review-view" data-view-panel="review" hidden>
+          <header class="page-header">
+            <div>
+              <p class="eyebrow">Quality control</p>
+              <p class="variant-context">Reviewing <strong id="review-variant-name">no variant selected</strong></p>
+              <h1>Keep only the takes you trust.</h1>
+              <p>Listen, confirm the transcript, and approve each clean recording.</p>
+            </div>
+            <div class="review-header-actions">
+              <button class="button secondary" id="refresh-recordings" type="button">Refresh checks</button>
+            </div>
+          </header>
+
+          <div class="summary-strip">
+            <div><strong id="review-total">0</strong><span>Fresh takes</span></div>
+            <div><strong id="review-approved">0</strong><span>Approved</span></div>
+            <div><strong id="review-needs-attention">0</strong><span>Need attention</span></div>
+            <div><strong id="review-approved-time">0:00</strong><span>Approved audio</span></div>
+          </div>
+
+          <div class="review-toolbar">
+            <div class="filter-tabs" role="group" aria-label="Filter recordings">
+              <button class="active" type="button" data-review-filter="all">All</button>
+              <button type="button" data-review-filter="pending">Pending</button>
+              <button type="button" data-review-filter="approved">Approved</button>
+              <button type="button" data-review-filter="quarantined">Needs attention</button>
+            </div>
+            <div class="selection-toolbar" aria-label="Selected recording actions">
+              <button class="button secondary compact" id="select-visible-recordings" type="button">Select all shown</button>
+              <button class="button secondary compact" id="clear-recording-selection" type="button">Select none</button>
+              <span id="selected-recording-count">0 selected</span>
+              <button class="button primary compact" id="approve-selected-recordings" type="button" disabled>Approve</button>
+              <button class="button secondary compact" id="quarantine-selected-recordings" type="button" disabled>Quarantine</button>
+              <button class="button danger compact" id="reject-selected-recordings" type="button" disabled>Reject</button>
+            </div>
+          </div>
+
+          <div class="recording-list" id="recording-list">
+            <div class="empty-state">
+              <span class="empty-icon" aria-hidden="true">◌</span>
+              <h2>No takes to review yet</h2>
+              <p>Record your first prompt and it will appear here with local quality checks.</p>
+              <button class="button primary" type="button" data-go-to="record">Start recording</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="train-view" data-view-panel="train" hidden>
+          <header class="page-header">
+            <div>
+              <p class="eyebrow">Local adaptation</p>
+              <p class="variant-context">Training <strong id="train-variant-name">no variant selected</strong></p>
+              <h1>Turn your recordings into your voice.</h1>
+              <p>Freeze a reviewed dataset, then start training when you are ready.</p>
+            </div>
+            <span class="model-badge"><span></span>Qwen3-TTS 1.7B Base</span>
+          </header>
+
+          <div class="train-grid">
+            <div class="train-main">
+              <article class="panel readiness-panel">
+                <div class="readiness-heading">
+                  <div><span class="card-kicker">Dataset readiness</span><h2 id="readiness-title">Collecting recordings</h2></div>
+                  <span class="readiness-score" id="readiness-score">0%</span>
+                </div>
+                <div class="large-progress"><span id="readiness-bar"></span></div>
+                <div class="readiness-checks">
+                  <div id="check-pilot"><span>○</span><div><strong>Pilot gate</strong><small>2–3 approved minutes</small></div></div>
+                  <div id="check-full"><span>○</span><div><strong>Full training</strong><small>30 approved minutes</small></div></div>
+                  <div id="check-split"><span>○</span><div><strong>Coverage</strong><small>Guided and interview takes</small></div></div>
+                </div>
+              </article>
+
+              <article class="panel dataset-panel">
+                <div class="panel-title-row"><div><span class="card-kicker">Immutable input</span><h2>Dataset version</h2></div><button class="button secondary" id="freeze-dataset" type="button">Freeze current dataset</button></div>
+                <p class="muted">Freezing locks approved audio and checksums so a training run can always be reproduced.</p>
+                <label class="field-label" for="dataset-version">Dataset</label>
+                <select id="dataset-version"><option value="">No frozen dataset</option></select>
+                <p class="dataset-version-meta" id="dataset-version-meta" hidden></p>
+              </article>
+
+              <article class="panel training-panel" id="training-panel">
+                <div class="panel-title-row">
+                  <div><span class="card-kicker">Manual training</span><h2 id="training-title">Ready for a new run</h2></div>
+                  <span class="training-state idle" id="training-state">Idle</span>
+                </div>
+
+                <div class="training-options" id="training-options">
+                  <label>
+                    <span>Stage</span>
+                    <select id="training-stage">
+                      <option value="pilot">Pilot · quality gate</option>
+                      <option value="full">Full · 3 epochs</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Checkpoint label</span>
+                    <input id="checkpoint-label" maxlength="48" placeholder="e.g. warm-narration-01">
+                  </label>
+                </div>
+                <p class="runtime-estimate" id="runtime-estimate">Choose a frozen dataset for a local runtime estimate.</p>
+
+                <div class="training-progress" id="training-progress" hidden>
+                  <div class="progress-copy"><strong id="training-step">Preparing dataset…</strong><span id="training-percent">0%</span></div>
+                  <div class="large-progress animated"><span id="training-bar"></span></div>
+                  <div class="progress-meta"><span id="training-epoch">Epoch —</span><span id="training-loss">Loss —</span><span id="training-elapsed">Elapsed —</span></div>
+                </div>
+
+                <div class="button-row align-end">
+                  <button class="button danger" id="cancel-training" type="button" hidden>Cancel run</button>
+                  <button class="button primary" id="start-training" type="button" disabled>Start local training</button>
+                </div>
+              </article>
+            </div>
+
+            <aside class="train-aside">
+              <article class="panel checkpoints-card">
+                <div class="panel-title-row"><div><span class="card-kicker">Versions</span><h2>Checkpoints</h2></div></div>
+                <p class="checkpoint-scope">Showing only checkpoints trained for <strong id="checkpoint-variant-name">no variant selected</strong>.</p>
+                <div id="checkpoint-list" class="checkpoint-list">
+                  <div class="small-empty">No checkpoints yet.</div>
+                </div>
+                <div class="blind-review" id="blind-review" hidden>
+                  <div class="blind-heading"><strong>Blinded listening</strong><span id="blind-position">1 of 20</span></div>
+                  <p id="blind-text"></p>
+                  <div class="blind-audio-row" role="group" aria-label="Compare voice clips A and B">
+                    <button class="button secondary" id="play-option-a" type="button" aria-pressed="false">Play clip A</button>
+                    <button class="button secondary" id="play-option-b" type="button" aria-pressed="false">Play clip B</button>
+                  </div>
+                  <p class="blind-playback-status" id="blind-playback-status" aria-live="polite">Nothing playing. You can stop as soon as you know.</p>
+                  <p class="muted"><strong>Vote for the voice you heard:</strong> which clip sounds more like you? The answer key stays hidden until all votes are submitted.</p>
+                  <div class="blind-vote-row" role="group" aria-label="Choose the voice that sounds more like you">
+                    <button class="button secondary" data-blind-choice="A" type="button">A sounds like me</button>
+                    <button class="button secondary" data-blind-choice="B" type="button">B sounds like me</button>
+                    <button class="button secondary blind-tie" data-blind-choice="tie" type="button">Neither / tie</button>
+                  </div>
+                </div>
+              </article>
+              <article class="tip-card">
+                <span aria-hidden="true">⌘</span>
+                <div><strong>Your Mac does the work</strong><p>Training may warm the machine. Keep it plugged in and leave this page open.</p></div>
+              </article>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="generate-view" data-view-panel="generate" hidden>
+          <header class="page-header">
+            <div>
+              <p class="eyebrow">Reference-free speech</p>
+              <p class="variant-context">Generating with <strong id="generate-variant-name">no variant selected</strong></p>
+              <h1>Write it. Hear it in your voice.</h1>
+              <p>Generation uses the selected trained checkpoint—no reference recording required.</p>
+            </div>
+            <span class="no-reference-badge">No reference audio</span>
+          </header>
+
+          <div class="generate-grid">
+            <article class="panel script-panel">
+              <div class="panel-title-row"><div><span class="card-kicker">Script</span><h2>What should your voice say?</h2></div><span class="character-count"><b id="character-count">0</b> / 2,000</span></div>
+              <textarea id="generation-text" maxlength="2000" placeholder="Type or paste your English narration here…"></textarea>
+              <div class="generate-options">
+                <label>
+                  <span>Voice checkpoint</span>
+                  <select id="generation-checkpoint"><option value="">No promoted checkpoint</option></select>
+                </label>
+                <label>
+                  <span>Delivery</span>
+                  <select id="generation-delivery">
+                    <option value="natural">Natural</option>
+                    <option value="warm">Warm narration</option>
+                    <option value="clear">Clear and precise</option>
+                    <option value="measured">Measured pace</option>
+                  </select>
+                </label>
+              </div>
+              <fieldset class="reproducibility-panel">
+                <legend>Repeatability</legend>
+                <label class="reproducible-toggle" for="generation-reproducible">
+                  <input id="generation-reproducible" type="checkbox" checked aria-controls="generation-seed">
+                  <span><strong>Reproducible</strong><small>Use the same seed to reproduce this generation setup.</small></span>
+                </label>
+                <label class="seed-field" for="generation-seed">
+                  <span>Seed</span>
+                  <input id="generation-seed" type="number" min="0" max="4294967295" step="1" value="3407" inputmode="numeric" aria-describedby="generation-seed-help generation-seed-error">
+                </label>
+                <p class="reproducibility-help" id="generation-seed-help">Seed 3407 matches the local evaluation starting seed. Text, checkpoint, and delivery must also stay the same.</p>
+                <p class="field-error" id="generation-seed-error" role="alert" hidden>Enter a whole number from 0 to 4,294,967,295.</p>
+              </fieldset>
+              <div class="button-row align-end">
+                <span class="local-note"><span></span>Generated entirely on this Mac</span>
+                <button class="button primary generate-button" id="generate-button" type="button" disabled><span aria-hidden="true">▶</span> Generate speech</button>
+              </div>
+            </article>
+
+            <article class="panel output-panel" id="output-panel">
+              <div class="output-placeholder" id="output-placeholder">
+                <span class="output-glyph" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                <h2>Your generated voice will appear here</h2>
+                <p>Select a trained checkpoint and enter a script to begin.</p>
+              </div>
+              <div class="generated-output" id="generated-output" hidden>
+                <div class="take-preview-heading"><div><strong id="output-name">Generated speech</strong><small id="output-meta">Local WAV</small></div><span class="qa-pill approved">Complete</span></div>
+                <audio id="generated-audio" controls preload="metadata"></audio>
+                <a class="button secondary download-button" id="download-output" href="#" download="voice-generated.wav">Save WAV</a>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+      </main>
+    </div>
+
+    <section class="model-setup-overlay" id="model-setup-overlay" aria-labelledby="model-setup-title" hidden>
+      <article class="model-setup-card" role="dialog" aria-modal="true">
+        <img class="model-setup-mark" src="/static/branding/noice-city-icon.png" alt="" aria-hidden="true">
+        <p class="eyebrow">One-time setup</p>
+        <h1 id="model-setup-title">Install your local voice models.</h1>
+        <p class="model-setup-intro">Noice City downloads the exact Qwen3-TTS and Whisper models once, verifies them, and stores them privately on this Mac. After setup, recording, training, and generation work offline.</p>
+        <div class="model-setup-models" aria-label="Required model pack">
+          <div><strong>Qwen3-TTS 1.7B Base</strong><span>about 4.5 GB</span></div>
+          <div><strong>Whisper speech checks</strong><span>about 1.5 GB</span></div>
+        </div>
+        <div class="model-setup-progress" id="model-setup-progress" hidden>
+          <div><strong id="model-setup-message">Preparing download…</strong><span id="model-setup-percent">0%</span></div>
+          <div class="large-progress animated"><span id="model-setup-bar"></span></div>
+          <p id="model-setup-phase">Keep Noice City open while setup finishes.</p>
+        </div>
+        <p class="model-setup-error" id="model-setup-error" role="alert" hidden></p>
+        <button class="button primary model-setup-button" id="start-model-setup" type="button">Download model pack · about 6 GB</button>
+        <small>Internet is used only for this explicit setup step. Your recordings are never uploaded.</small>
+      </article>
+    </section>
+
+    <dialog class="variant-dialog" id="variant-dialog" aria-labelledby="variant-dialog-title">
+      <div class="variant-dialog-shell">
+        <header class="variant-dialog-heading">
+          <div>
+            <p class="eyebrow">Voice lineages</p>
+            <h2 id="variant-dialog-title">Voice variants</h2>
+            <p>Each variant keeps its sessions, recordings, datasets, and checkpoints separate.</p>
+          </div>
+          <button class="dialog-close" id="close-variant-dialog" type="button" aria-label="Close voice variant manager">×</button>
+        </header>
+        <div class="variant-manager-list" id="variant-manager-list"></div>
+        <form class="variant-create-form" id="variant-create-form">
+          <div>
+            <span class="card-kicker">Create a fresh variant</span>
+            <p>Use a new variant when the target voice, accent coverage, or recording lineage should stay independent.</p>
+          </div>
+          <label>
+            <span>Name</span>
+            <input id="variant-name" name="name" maxlength="60" required placeholder="e.g. Warm Indian English">
+          </label>
+          <label>
+            <span>Description</span>
+            <input id="variant-description" name="description" maxlength="180" placeholder="What should this voice lineage capture?">
+          </label>
+          <div class="button-row align-end">
+            <button class="button primary" id="create-variant" type="submit">Create variant</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+  </body>
+</html>
