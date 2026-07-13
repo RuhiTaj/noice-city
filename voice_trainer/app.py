@@ -7,6 +7,7 @@ from __future__ import annotations
 from . import config as config
 
 import asyncio
+import atexit
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -46,11 +48,23 @@ class VariantMismatchError(ValueError):
 config.ensure_private_directories()
 store = VoiceStore(config.APP_ROOT).initialize()
 
+
+@asynccontextmanager
+async def app_lifespan(_application: FastAPI):
+    """Stop any dedicated installer process before the API exits."""
+
+    yield
+    setup_jobs = globals().get("model_setup")
+    if setup_jobs is not None:
+        setup_jobs.shutdown()
+
+
 app = FastAPI(
     title="Noice City",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=app_lifespan,
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=[config.HOST, "localhost"])
 app.add_middleware(LocalSessionMiddleware)
@@ -58,6 +72,14 @@ app.add_middleware(LocalSessionMiddleware)
 
 class StrictBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ModelSetupRequest(StrictBody):
+    component: Literal["qwen", "whisper"] = "qwen"
+
+
+class ModelSetupCancelRequest(StrictBody):
+    component: Literal["qwen", "whisper"] | None = None
 
 
 class VoiceVariantCreate(StrictBody):
@@ -95,16 +117,14 @@ class RecordingReview(StrictBody):
     note: str | None = Field(default=None, max_length=500)
 
 
-class BulkRecordingApproval(StrictBody):
-    variant_id: str = Field(min_length=1, max_length=100)
-    confirm_playback: Literal[True]
-    confirm_transcripts: Literal[True]
-
-
 class BulkRecordingReview(StrictBody):
     variant_id: str = Field(min_length=1, max_length=100)
     recording_ids: list[str] = Field(min_length=1, max_length=500)
     status: Literal["approved", "quarantined", "rejected"]
+    playback_confirmed_ids: list[str] = Field(default_factory=list, max_length=500)
+    # Kept for compatibility with an older local UI. A batch-wide boolean is
+    # not evidence that each recording was actually played, so it is never
+    # used to mark individual takes as heard.
     confirm_playback: bool = False
     confirm_transcripts: bool = False
     override_failed_qa: bool = False
@@ -173,6 +193,7 @@ class TrainingJobs:
                     "HF_HUB_DISABLE_TELEMETRY": "1",
                     "DO_NOT_TRACK": "1",
                     "NO_PROXY": "127.0.0.1,localhost",
+                    "no_proxy": "127.0.0.1,localhost",
                 }
             )
             for key in (
@@ -182,6 +203,9 @@ class TrainingJobs:
                 "HTTP_PROXY",
                 "HTTPS_PROXY",
                 "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
             ):
                 environment.pop(key, None)
             command = [
@@ -434,6 +458,7 @@ class EvaluationJobs:
                 "HF_HUB_DISABLE_TELEMETRY": "1",
                 "DO_NOT_TRACK": "1",
                 "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
             }
         )
         for key in (
@@ -443,6 +468,9 @@ class EvaluationJobs:
             "HTTP_PROXY",
             "HTTPS_PROXY",
             "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
         ):
             environment.pop(key, None)
         return environment
@@ -615,6 +643,7 @@ class EvaluationJobs:
 evaluation_jobs = EvaluationJobs()
 jobs = TrainingJobs()
 model_setup = ModelSetupJobs(PROJECT_ROOT)
+atexit.register(model_setup.shutdown)
 _runtime_lock = threading.Lock()
 _runtime_checkpoint: str | None = None
 _runtime: NamedSpeakerRuntime | None = None
@@ -662,23 +691,76 @@ def _require_custom_script_gate(variant_id: str) -> dict[str, Any]:
     return summary
 
 
-def _require_models_ready() -> None:
+def _require_voice_model_ready() -> None:
     try:
         verify_model(full_hash=False)
-        verify_asr_model(full_hash=False)
     except Exception as exc:
         raise ValueError(
-            "Complete the one-time local model download before using Noice City"
+            "Install the local Qwen3-TTS voice model before using Noice City"
         ) from exc
+
+
+def _speech_checks_ready() -> bool:
+    try:
+        verify_asr_model(full_hash=False)
+        return True
+    except Exception:
+        return False
+
+
+def _require_speech_checks_ready() -> None:
+    if not _speech_checks_ready():
+        raise ValueError(
+            "Install Whisper before training; it is required for mandatory automatic "
+            "transcript/WER and checkpoint evaluation"
+        )
 
 
 def _public_recording(row: dict[str, Any]) -> dict[str, Any]:
     value = dict(row)
+    qa = value.get("qa_json")
+    value["intake_warnings"] = (
+        list(qa.get("intake_warnings", [])) if isinstance(qa, dict) else []
+    )
     value["audio_url"] = (
         f"/api/recordings/{row['id']}/audio"
         f"?variant_id={row['variant_id']}"
     )
     return value
+
+
+def _pending_transcription_qa(reason: str) -> dict[str, Any]:
+    messages = {
+        "whisper_not_installed": (
+            "Whisper is not installed. The audio was saved; confirm its transcript manually."
+        ),
+        "whisper_transcription_failed": (
+            "Local Whisper transcription failed. The audio was saved; confirm its transcript manually."
+        ),
+        "whisper_empty_transcript": (
+            "Whisper returned no transcript. The audio was saved; confirm its transcript manually."
+        ),
+    }
+    message = messages[reason]
+    return {
+        # The independent acoustic QA remains authoritative in VoiceStore. This
+        # flag only says that transcript confirmation needs human attention.
+        "passed": True,
+        "needs_review": True,
+        "warnings": ["transcription_pending"],
+        "transcription": {
+            "status": "pending",
+            "reason": reason,
+            "manual_confirmation_required": True,
+        },
+        "intake_warnings": [
+            {
+                "code": reason,
+                "message": message,
+                "action": "confirm_transcript_manually",
+            }
+        ],
+    }
 
 
 def _public_run(run: dict[str, Any]) -> dict[str, Any]:
@@ -783,11 +865,19 @@ def api_model_setup_status() -> dict[str, Any]:
 
 
 @app.post("/api/model-setup")
-def api_start_model_setup() -> dict[str, Any]:
+def api_start_model_setup(body: ModelSetupRequest) -> dict[str, Any]:
     try:
         if jobs.active_run is not None or evaluation_jobs.active_checkpoint is not None:
             raise ValueError("Wait for local training and evaluation to finish")
-        return model_setup.start()
+        return model_setup.start(body.component)
+    except Exception as exc:
+        raise _safe_http_error(exc) from exc
+
+
+@app.post("/api/model-setup/cancel")
+def api_cancel_model_setup(body: ModelSetupCancelRequest) -> dict[str, Any]:
+    try:
+        return model_setup.cancel(body.component)
     except Exception as exc:
         raise _safe_http_error(exc) from exc
 
@@ -894,7 +984,7 @@ async def api_add_recording(
     split: str | None = Form(default=None),
 ):
     try:
-        _require_models_ready()
+        _require_voice_model_ready()
     except Exception as exc:
         raise _safe_http_error(exc) from exc
     del prompt_kind, expected_text, expected_transcript, duration_seconds, split
@@ -918,13 +1008,30 @@ async def api_add_recording(
         session = store.get_session(session_id)
         prompt = store.get_prompt(prompt_id, variant_id=str(session["variant_id"]))
         expected = str(prompt["text"]) if prompt["kind"] == "guided" else ""
-        transcription = await asyncio.to_thread(transcribe_local, temporary, expected)
+        transcription: dict[str, Any] | None = None
+        transcription_qa: dict[str, Any] | None = None
+        if _speech_checks_ready():
+            try:
+                candidate = await asyncio.to_thread(transcribe_local, temporary, expected)
+                candidate_text = candidate.get("text") if isinstance(candidate, dict) else None
+                if not isinstance(candidate_text, str) or not candidate_text.strip():
+                    transcription_qa = _pending_transcription_qa("whisper_empty_transcript")
+                else:
+                    transcription = candidate
+            except Exception:
+                # An optional ASR failure must never turn a successfully captured
+                # immutable master into a lost take. Core acoustic QA runs below;
+                # only the transcript remains pending for manual confirmation.
+                transcription_qa = _pending_transcription_qa("whisper_transcription_failed")
+        else:
+            transcription_qa = _pending_transcription_qa("whisper_not_installed")
         row = await asyncio.to_thread(
             store.add_recording,
             prompt_id,
             session_id=session_id,
             master_bytes=payload,
-            transcript=transcription["text"],
+            transcript=transcription["text"] if transcription else None,
+            qa=transcription_qa,
         )
         return _public_recording(row)
     except Exception as exc:
@@ -939,19 +1046,10 @@ def api_recordings(
     status: str | None = None,
 ):
     try:
-        _require_models_ready()
         return [
             _public_recording(row)
             for row in store.list_recordings(status, variant_id=variant_id)
         ]
-    except Exception as exc:
-        raise _safe_http_error(exc) from exc
-
-
-@app.post("/api/recordings/approve-all")
-def api_approve_all_recordings(body: BulkRecordingApproval):
-    try:
-        return store.approve_all_pending(variant_id=body.variant_id)
     except Exception as exc:
         raise _safe_http_error(exc) from exc
 
@@ -962,12 +1060,14 @@ def api_bulk_review_recordings(body: BulkRecordingReview):
         rows = [store.get_recording(recording_id) for recording_id in body.recording_ids]
         for row in rows:
             _require_variant(row, body.variant_id, "Recording")
-        if body.status == "approved" and not (
-            body.confirm_playback and body.confirm_transcripts
-        ):
+        playback_confirmed_ids = set(body.playback_confirmed_ids)
+        unknown_playback_ids = playback_confirmed_ids.difference(body.recording_ids)
+        if unknown_playback_ids:
             raise ValueError(
-                "Bulk approval requires confirmation of playback and transcripts"
+                "Playback confirmations must belong to the selected recordings"
             )
+        if body.status == "approved" and not body.confirm_transcripts:
+            raise ValueError("Bulk approval requires transcript confirmation")
         transcripts = {
             recording_id: transcript.strip()
             for recording_id, transcript in body.transcripts.items()
@@ -980,6 +1080,7 @@ def api_bulk_review_recordings(body: BulkRecordingReview):
             body.status,
             transcripts=transcripts,
             confirm_review=body.status == "approved",
+            playback_confirmed_ids=playback_confirmed_ids,
             override_failed_qa=body.status == "approved" and body.override_failed_qa,
             variant_id=body.variant_id,
         )
@@ -1180,7 +1281,8 @@ def api_checkpoint_vote(
 @app.post("/api/training-runs")
 def api_create_training_run(body: TrainingRunRequest):
     try:
-        _require_models_ready()
+        _require_voice_model_ready()
+        _require_speech_checks_ready()
         variant = store.get_voice_variant(body.variant_id)
         if variant["state"] != "active":
             raise ValueError("Archived voice variants cannot start training")
@@ -1291,7 +1393,7 @@ def _generate(body: GenerationRequest, output: Path) -> dict[str, Any]:
 @app.post("/api/generations")
 async def api_generate(body: GenerationRequest):
     try:
-        _require_models_ready()
+        _require_voice_model_ready()
     except Exception as exc:
         raise _safe_http_error(exc) from exc
     if jobs.active_run is not None:

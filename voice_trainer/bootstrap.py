@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
@@ -42,7 +43,20 @@ MODEL_REQUIRED_FILES = {
     "speech_tokenizer/config.json",
     "speech_tokenizer/model.safetensors",
 }
-ASR_REQUIRED_FILES = {"config.json", "model.safetensors", "tokenizer.json"}
+ASR_REQUIRED_FILES = {
+    "README.md",
+    "added_tokens.json",
+    "config.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "normalizer.json",
+    "preprocessor_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+}
 FORBIDDEN_SUFFIXES = {".bin", ".pt", ".pth", ".pkl"}
 ProgressCallback = Callable[[dict], None]
 
@@ -53,6 +67,34 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
         while chunk := stream.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _copy_independent(source: Path, destination: Path) -> None:
+    """Copy a cached model file without sharing its inode with the cache.
+
+    APFS clone copies keep the fast, space-efficient first-run path while
+    preserving copy-on-write isolation.  The portable fallback performs a
+    normal copy.  Hard links are deliberately forbidden because later cache
+    maintenance could otherwise mutate an already verified model tree.
+    """
+    copied = False
+    cp = Path("/bin/cp")
+    if cp.exists():
+        result = subprocess.run(
+            [str(cp), "-c", str(source), str(destination)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        copied = result.returncode == 0
+        if not copied:
+            destination.unlink(missing_ok=True)
+    if not copied:
+        shutil.copy2(source, destination)
+    if source.stat().st_ino == destination.stat().st_ino:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError("Model cache adoption created an unsafe hard link")
 
 
 def _source_files(source: Path) -> list[tuple[Path, Path]]:
@@ -75,7 +117,38 @@ def _source_files(source: Path) -> list[tuple[Path, Path]]:
     return files
 
 
-def adopt_installed_model(source: Path = HF_CACHE_MODEL) -> Path:
+def _new_model_staging(
+    *,
+    prefix: str,
+    staging_path: Path | None = None,
+) -> Path:
+    """Create a private staging directory that can be atomically promoted.
+
+    The setup worker supplies a job-specific direct child of the models
+    directory.  Keeping that location predictable lets the API clean only the
+    canceled job's partial files without ever scanning or deleting installed
+    model trees.
+    """
+    models_root = (APP_ROOT / "models").resolve()
+    models_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if staging_path is None:
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=models_root))
+
+    candidate = Path(staging_path).expanduser().resolve(strict=False)
+    if (
+        candidate.parent != models_root
+        or not candidate.name.startswith(".model-setup-")
+    ):
+        raise ValueError("Model setup staging path is outside the private models directory")
+    candidate.mkdir(mode=0o700, exist_ok=False)
+    return candidate
+
+
+def adopt_installed_model(
+    source: Path = HF_CACHE_MODEL,
+    *,
+    staging_path: Path | None = None,
+) -> Path:
     """Make an independent, immutable local model tree without network access."""
     ensure_private_directories()
     files = _source_files(source)
@@ -83,16 +156,16 @@ def adopt_installed_model(source: Path = HF_CACHE_MODEL) -> Path:
         verify_model()
         return MODEL_ROOT
 
-    staging = Path(tempfile.mkdtemp(prefix="model-staging-", dir=APP_ROOT / "models"))
+    staging = _new_model_staging(
+        prefix="model-staging-",
+        staging_path=staging_path,
+    )
     records: list[dict] = []
     try:
         for original, relative in files:
             destination = staging / relative
             destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            try:
-                os.link(original, destination)
-            except OSError:
-                shutil.copy2(original, destination)
+            _copy_independent(original, destination)
             destination.chmod(0o600)
             records.append(
                 {
@@ -153,11 +226,13 @@ def _download_snapshot(
     component: str,
     progress: ProgressCallback | None = None,
     snapshot_download_fn=None,
+    staging_path: Path | None = None,
 ) -> Path:
     """Download, validate, checksum, and atomically install one pinned model."""
     ensure_private_directories()
-    staging = Path(
-        tempfile.mkdtemp(prefix=f"{component}-download-", dir=APP_ROOT / "models")
+    staging = _new_model_staging(
+        prefix=f"{component}-download-",
+        staging_path=staging_path,
     )
     try:
         _emit(
@@ -269,6 +344,7 @@ def install_qwen_model(
     *,
     progress: ProgressCallback | None = None,
     snapshot_download_fn=None,
+    staging_path: Path | None = None,
 ) -> Path:
     """Download the exact Qwen BF16 snapshot during explicit first-run setup."""
     if MODEL_MANIFEST.exists():
@@ -293,7 +369,7 @@ def install_qwen_model(
             phase="adopting",
             message="Using the verified Qwen snapshot already on this Mac",
         )
-        return adopt_installed_model()
+        return adopt_installed_model(staging_path=staging_path)
     return _download_snapshot(
         repo=MODEL_REPO,
         revision=MODEL_REVISION,
@@ -303,6 +379,7 @@ def install_qwen_model(
         component="Qwen",
         progress=progress,
         snapshot_download_fn=snapshot_download_fn,
+        staging_path=staging_path,
     )
 
 
@@ -329,12 +406,18 @@ def verify_model(full_hash: bool = True) -> dict:
     return manifest
 
 
-def install_asr_model() -> Path:
+def install_asr_model(
+    *,
+    progress: ProgressCallback | None = None,
+    snapshot_download_fn=None,
+    staging_path: Path | None = None,
+) -> Path:
     """Download the pinned local QA model during explicit online setup only."""
     ensure_private_directories()
     if ASR_MANIFEST.exists():
         try:
             verify_asr_model(full_hash=False)
+            _emit(progress, component="Whisper", phase="ready", message="Speech checks are ready")
             return ASR_ROOT
         except Exception:
             shutil.rmtree(ASR_ROOT, ignore_errors=True)
@@ -346,8 +429,11 @@ def install_asr_model() -> Path:
         revision=ASR_REVISION,
         target=ASR_ROOT,
         required_files=ASR_REQUIRED_FILES,
-        model_format="mlx-fp16-safetensors",
+        model_format="huggingface-fp16-safetensors",
         component="Whisper",
+        progress=progress,
+        snapshot_download_fn=snapshot_download_fn,
+        staging_path=staging_path,
     )
     verify_asr_model()
     return ASR_ROOT
@@ -381,7 +467,7 @@ def install_required_models(
                 revision=ASR_REVISION,
                 target=ASR_ROOT,
                 required_files=ASR_REQUIRED_FILES,
-                model_format="mlx-fp16-safetensors",
+                model_format="huggingface-fp16-safetensors",
                 component="Whisper",
                 progress=progress,
                 snapshot_download_fn=snapshot_download_fn,
@@ -394,7 +480,7 @@ def install_required_models(
             revision=ASR_REVISION,
             target=ASR_ROOT,
             required_files=ASR_REQUIRED_FILES,
-            model_format="mlx-fp16-safetensors",
+            model_format="huggingface-fp16-safetensors",
             component="Whisper",
             progress=progress,
             snapshot_download_fn=snapshot_download_fn,
@@ -430,6 +516,7 @@ def verify_asr_model(full_hash: bool = True) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adopt the installed Qwen model locally")
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--verify-speech-checks", action="store_true")
     parser.add_argument("--download-asr", action="store_true")
     parser.add_argument("--download-models", action="store_true")
     parser.add_argument("--quick", action="store_true", help="Skip full content hashes")
@@ -440,8 +527,10 @@ def main() -> None:
         print(install_asr_model())
     elif args.verify_only:
         verify_model(full_hash=not args.quick)
-        verify_asr_model(full_hash=not args.quick)
         print(MODEL_ROOT)
+    elif args.verify_speech_checks:
+        verify_asr_model(full_hash=not args.quick)
+        print(ASR_ROOT)
     else:
         print(adopt_installed_model())
 

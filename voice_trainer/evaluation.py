@@ -28,6 +28,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from .model_runtime import DeliverySettings, NamedSpeakerRuntime
+from .pcm_wav import PcmWavError, read_mono_pcm_wav
 from .training import _offline_environment, validate_local_model_path
 from .transcription import normalize_transcript, transcribe_local, word_error_rate
 
@@ -170,37 +171,11 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _pcm_to_float(raw: bytes, sample_width: int) -> np.ndarray:
-    if sample_width == 1:
-        return (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-    if sample_width == 2:
-        return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    if sample_width == 3:
-        packed = np.frombuffer(raw, dtype=np.uint8)
-        if packed.size % 3:
-            raise EvaluationError("generated WAV contains incomplete 24-bit samples")
-        packed = packed.reshape(-1, 3).astype(np.int32)
-        values = packed[:, 0] | (packed[:, 1] << 8) | (packed[:, 2] << 16)
-        values = np.where(values & 0x800000, values - 0x1000000, values)
-        return values.astype(np.float32) / 8388608.0
-    if sample_width == 4:
-        return np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
-    raise EvaluationError(f"unsupported generated WAV sample width: {sample_width}")
-
-
 def _read_mono_wav(path: Path) -> tuple[np.ndarray, int]:
     try:
-        with wave.open(str(path), "rb") as wav:
-            if wav.getnchannels() != 1:
-                raise EvaluationError("generated evaluation audio must be mono")
-            sample_rate = wav.getframerate()
-            sample_width = wav.getsampwidth()
-            samples = _pcm_to_float(wav.readframes(wav.getnframes()), sample_width)
-    except (EOFError, wave.Error) as exc:
+        return read_mono_pcm_wav(path)
+    except PcmWavError as exc:
         raise EvaluationError(f"invalid generated WAV {path}: {exc}") from exc
-    if sample_rate <= 0 or samples.size == 0 or not np.isfinite(samples).all():
-        raise EvaluationError(f"generated WAV is empty or invalid: {path}")
-    return samples, sample_rate
 
 
 def _max_consecutive_word_run(words: Sequence[str]) -> int:
@@ -340,10 +315,18 @@ class QwenSpeakerEmbedder:
     def __call__(self, audio_path: Path) -> np.ndarray:
         try:
             import mlx.core as mx
-            from mlx_audio.utils import load_audio
         except ImportError as exc:
             raise EvaluationError("the locked MLX speaker-scoring runtime is unavailable") from exc
-        audio = load_audio(str(audio_path), sample_rate=24000)
+        try:
+            samples, _ = read_mono_pcm_wav(
+                audio_path,
+                expected_sample_rate=24000,
+            )
+        except PcmWavError as exc:
+            raise EvaluationError(
+                f"speaker-scoring WAV must be 24 kHz mono PCM: {audio_path}"
+            ) from exc
+        audio = mx.array(samples, dtype=mx.float32)
         embedding = self._model.extract_speaker_embedding(audio, sr=24000)
         mx.eval(embedding)
         return _unit_vector(embedding)

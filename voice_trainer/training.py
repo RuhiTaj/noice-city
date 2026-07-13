@@ -601,9 +601,17 @@ def _build_training_example(
     """Construct Qwen's two-channel teacher-forcing sequence for one clip."""
 
     import mlx.core as mx
-    from mlx_audio.utils import load_audio
 
-    audio = load_audio(str(item.audio_path), sample_rate=24000)
+    from .pcm_wav import PcmWavError, read_mono_pcm_wav
+
+    try:
+        audio_samples, _ = read_mono_pcm_wav(
+            item.audio_path,
+            expected_sample_rate=24000,
+        )
+    except PcmWavError as exc:
+        raise TrainingError(f"invalid 24 kHz training audio: {item.audio_path}") from exc
+    audio = mx.array(audio_samples, dtype=mx.float32)
     if model.speech_tokenizer is None or not model.speech_tokenizer.has_encoder:
         raise TrainingError("the local Base model speech tokenizer has no encoder")
     encoder_audio = audio[None, None, :] if audio.ndim == 1 else audio
@@ -964,7 +972,6 @@ def train_named_speaker(
         import mlx.optimizers as optim
         from mlx.utils import tree_flatten, tree_map
         from mlx_audio.tts.utils import load_model
-        from mlx_audio.utils import load_audio
     except ImportError as exc:
         raise TrainingError(
             "native training dependencies are unavailable; install the locked local environment"
@@ -980,7 +987,18 @@ def train_named_speaker(
     model.train()
 
     _emit(progress_cb, "extracting_speaker", audio_path=str(reference_item.audio_path))
-    reference_audio = load_audio(str(reference_item.audio_path), sample_rate=24000)
+    from .pcm_wav import PcmWavError, read_mono_pcm_wav
+
+    try:
+        reference_samples, _ = read_mono_pcm_wav(
+            reference_item.audio_path,
+            expected_sample_rate=24000,
+        )
+    except PcmWavError as exc:
+        raise TrainingError(
+            f"invalid 24 kHz speaker reference: {reference_item.audio_path}"
+        ) from exc
+    reference_audio = mx.array(reference_samples, dtype=mx.float32)
     speaker_embedding = model.extract_speaker_embedding(reference_audio).reshape(-1)
     if speaker_embedding.shape[0] != model.config.talker_config.hidden_size:
         raise TrainingError(

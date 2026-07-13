@@ -1,4 +1,4 @@
-"""Dependency-free WAV validation, conversion, and recording quality checks.
+"""Local-only WAV validation, conversion, and recording quality checks.
 
 The recorder deliberately accepts one wire format: 48 kHz, mono, signed 24-bit
 PCM WAV.  Keeping that contract narrow makes the immutable master auditable and
@@ -16,6 +16,8 @@ import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import BinaryIO, Sequence
+
+import numpy as np
 
 
 MASTER_SAMPLE_RATE = 48_000
@@ -44,6 +46,27 @@ class QualityThresholds:
     preferred_minimum_level_dbfs: float = -30.0
     preferred_maximum_level_dbfs: float = -12.0
     maximum_level_dbfs: float = -6.0
+    minimum_speech_ratio: float = 0.12
+    minimum_speech_likeness_ratio: float = 0.18
+
+
+@dataclass(frozen=True)
+class SpeechActivityMetrics:
+    """Deterministic acoustic evidence used by the model-free speech gate.
+
+    ``active_frame_count`` is the ordinary energy VAD result. A frame is only
+    counted as speech when it also has speech-like bandwidth, zero-crossing,
+    and periodicity. This deliberately rejects steady test tones and broadband
+    room noise without claiming to identify a speaker or recognize words.
+    """
+
+    algorithm: str
+    frame_count: int
+    active_frame_count: int
+    speech_frame_count: int
+    activity_ratio: float
+    speech_ratio: float
+    speech_likeness_ratio: float
 
 
 @dataclass(frozen=True)
@@ -58,8 +81,9 @@ class AudioMetrics:
     clipping_ratio: float
     silence_ratio: float
     snr_db: float | None
+    speech_activity: SpeechActivityMetrics
 
-    def to_dict(self) -> dict[str, int | float | None]:
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -159,6 +183,106 @@ def _estimate_snr_db(frame_levels: Sequence[float], silence_amplitude: float) ->
     return round(20.0 * math.log10(max(signal_rms, 1.0) / max(noise_rms, 1.0)), 3)
 
 
+def detect_speech_activity(
+    samples: Sequence[int],
+    sample_rate: int,
+    silence_amplitude: float,
+) -> SpeechActivityMetrics:
+    """Find speech-like activity using only deterministic acoustic features.
+
+    This is intentionally a compact, model-free VAD. Thirty-millisecond frames
+    first pass an absolute energy threshold. Active frames must then contain
+    energy in multiple voice bands, avoid single-bin tonal concentration, have
+    a plausible zero-crossing rate, and show pitch-range periodicity. Those
+    checks reject silence, stable sine waves, and unstructured broadband noise
+    while accepting ordinary voiced speech. No transcript, model, or network is
+    involved.
+    """
+
+    frame_size = max(1, round(sample_rate * 0.030))
+    hop_size = max(1, round(sample_rate * 0.015))
+    values = np.asarray(samples, dtype=np.float64)
+    if values.size < frame_size:
+        return SpeechActivityMetrics("acoustic-vad-v1", 0, 0, 0, 0.0, 0.0, 0.0)
+
+    window = np.hanning(frame_size)
+    frequencies = np.fft.rfftfreq(frame_size, d=1.0 / sample_rate)
+    voice_mask = (frequencies >= 70.0) & (frequencies <= 8_000.0)
+    voice_frequencies = frequencies[voice_mask]
+    bands = ((80.0, 300.0), (300.0, 800.0), (800.0, 2_000.0),
+             (2_000.0, 4_000.0), (4_000.0, 8_000.0))
+    pitch_lag_min = max(1, round(sample_rate / 400.0))
+    pitch_lag_max = min(frame_size - 1, round(sample_rate / 60.0))
+
+    frame_count = 0
+    active_count = 0
+    speech_count = 0
+    for offset in range(0, values.size - frame_size + 1, hop_size):
+        frame_count += 1
+        frame = values[offset : offset + frame_size]
+        frame_rms = float(np.sqrt(np.mean(frame * frame)))
+        if frame_rms <= silence_amplitude:
+            continue
+        active_count += 1
+
+        centered = frame - float(np.mean(frame))
+        spectrum = np.fft.rfft(centered * window)
+        power = np.square(np.abs(spectrum))[voice_mask]
+        total_power = float(np.sum(power))
+        if not math.isfinite(total_power) or total_power <= 0.0:
+            continue
+        top_count = min(5, power.size)
+        top_concentration = float(np.sum(np.partition(power, -top_count)[-top_count:])) / total_power
+        spectral_flatness = float(
+            np.exp(np.mean(np.log(power + 1e-30))) / np.mean(power + 1e-30)
+        )
+        occupied_bands = sum(
+            float(np.sum(power[(voice_frequencies >= lower) & (voice_frequencies < upper)]))
+            / total_power
+            >= 0.015
+            for lower, upper in bands
+        )
+        zero_crossing_rate = float(
+            np.mean(np.signbit(centered[1:]) != np.signbit(centered[:-1]))
+        )
+
+        # FFT autocorrelation keeps this bounded and deterministic. Normalized
+        # pitch-range correlation separates voiced frames from random noise;
+        # the spectral concentration limit separately excludes pure tones.
+        autocorrelation_spectrum = np.fft.rfft(centered, n=frame_size * 2)
+        autocorrelation = np.fft.irfft(
+            np.square(np.abs(autocorrelation_spectrum)), n=frame_size * 2
+        )[:frame_size]
+        zero_lag = float(autocorrelation[0])
+        periodicity = (
+            float(np.max(autocorrelation[pitch_lag_min : pitch_lag_max + 1])) / zero_lag
+            if zero_lag > 0.0 and pitch_lag_max >= pitch_lag_min
+            else 0.0
+        )
+
+        if (
+            occupied_bands >= 2
+            and top_concentration < 0.93
+            and spectral_flatness < 0.65
+            and 0.004 <= zero_crossing_rate <= 0.40
+            and periodicity >= 0.25
+        ):
+            speech_count += 1
+
+    activity_ratio = active_count / frame_count if frame_count else 0.0
+    speech_ratio = speech_count / frame_count if frame_count else 0.0
+    speech_likeness_ratio = speech_count / active_count if active_count else 0.0
+    return SpeechActivityMetrics(
+        algorithm="acoustic-vad-v1",
+        frame_count=frame_count,
+        active_frame_count=active_count,
+        speech_frame_count=speech_count,
+        activity_ratio=round(activity_ratio, 6),
+        speech_ratio=round(speech_ratio, 6),
+        speech_likeness_ratio=round(speech_likeness_ratio, 6),
+    )
+
+
 def analyze_master_wav(
     source: str | os.PathLike[str] | BinaryIO,
     thresholds: QualityThresholds = QualityThresholds(),
@@ -178,6 +302,7 @@ def analyze_master_wav(
     silent_frames = sum(1 for level in frame_levels if level <= silence_amplitude)
     silence_ratio = silent_frames / len(frame_levels) if frame_levels else 1.0
     snr = _estimate_snr_db(frame_levels, silence_amplitude)
+    speech_activity = detect_speech_activity(samples, params.framerate, silence_amplitude)
 
     metrics = AudioMetrics(
         sample_rate=params.framerate,
@@ -190,6 +315,7 @@ def analyze_master_wav(
         clipping_ratio=round(clipping_count / len(samples), 8) if samples else 0.0,
         silence_ratio=round(silence_ratio, 6),
         snr_db=snr,
+        speech_activity=speech_activity,
     )
 
     failures: list[str] = []
@@ -220,6 +346,11 @@ def analyze_master_wav(
         warnings.append("snr_requires_review")
     elif metrics.snr_db < thresholds.minimum_snr_db:
         failures.append("snr_too_low")
+    if (
+        speech_activity.speech_ratio < thresholds.minimum_speech_ratio
+        or speech_activity.speech_likeness_ratio < thresholds.minimum_speech_likeness_ratio
+    ):
+        failures.append("speech_not_detected")
 
     return AudioQualityReport(
         metrics=metrics,

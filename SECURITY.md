@@ -9,12 +9,11 @@ model installation, or the packaged macOS application.
 
 | Version | Supported |
 | --- | --- |
+| 0.1.x macOS release | Yes |
 | Current `main` branch | Yes |
-| Public macOS DMG | Not released yet |
 | Older commits or modified builds | No |
 
-Until the first public release, fixes land on `main`. A versioned support table
-will replace this section when downloadable releases exist.
+Security fixes land on the current release line and `main`.
 
 ## Report a vulnerability privately
 
@@ -45,12 +44,17 @@ same-origin content security policy. Hugging Face and model-library telemetry
 are disabled. Ordinary startup, recording, training, evaluation, and generation
 are designed to remain offline.
 
-The explicit first-run model installation is the exception: after the user
-presses **Download model pack**, a dedicated subprocess downloads only the
-pinned Qwen and Whisper snapshots, validates required files, records hashes,
-and installs them into private Application Support storage. Development setup
-and release builds may separately contact Python package indexes when resolving
-the already locked dependency graph.
+Explicit model installation is the exception: after the user presses **Download
+Qwen3-TTS**, a dedicated subprocess downloads only the required pinned Qwen
+snapshot. A separate **Install Whisper** action downloads the optional snapshot
+for automatic transcription, transcript comparison/WER checks, and checkpoint
+evaluation. Each subprocess validates required files, records hashes, and
+installs its model into private Application Support storage. Basic
+speech-activity, silence, clipping, speaking-level/noise, and duration checks do
+not need Whisper. Noice City's training workflow does require it because every
+checkpoint receives mandatory automatic evaluation. Development setup and
+release builds may separately contact Python package indexes when resolving the
+already locked dependency graph.
 
 These controls do not replace normal workstation security. Any process running
 as the same macOS user may be able to read that user's files. Keep the Mac,

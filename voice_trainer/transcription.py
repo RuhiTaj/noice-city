@@ -4,6 +4,8 @@ import re
 import threading
 from pathlib import Path
 
+import numpy as np
+
 from .bootstrap import verify_asr_model
 from .config import ASR_ROOT
 
@@ -45,11 +47,32 @@ def _load_model():
     return _MODEL
 
 
+def _decode_whisper_audio(audio_path: Path) -> np.ndarray:
+    """Decode and resample locally to Whisper's 16 kHz mono input."""
+
+    try:
+        import miniaudio
+
+        decoded = miniaudio.decode_file(
+            str(audio_path),
+            output_format=miniaudio.SampleFormat.SIGNED16,
+            nchannels=1,
+            sample_rate=16_000,
+        )
+    except Exception as exc:
+        raise ValueError(f"could not decode local audio {audio_path}: {exc}") from exc
+    samples = np.asarray(decoded.samples, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size == 0 or not np.isfinite(samples).all():
+        raise ValueError(f"decoded local audio is empty or invalid: {audio_path}")
+    return samples
+
+
 def transcribe_local(audio_path: Path, expected: str = "") -> dict:
     """Transcribe one local WAV without any repository or network lookup."""
+    audio = _decode_whisper_audio(audio_path)
     with _LOCK:
         result = _load_model().generate(
-            str(audio_path),
+            audio,
             language="en",
             temperature=0.0,
             condition_on_previous_text=False,

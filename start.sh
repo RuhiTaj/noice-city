@@ -14,8 +14,10 @@ export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_DISABLE_TELEMETRY=1
 export DO_NOT_TRACK=1
-unset HF_TOKEN HUGGING_FACE_HUB_TOKEN OPENAI_API_KEY HTTP_PROXY HTTPS_PROXY ALL_PROXY
+unset HF_TOKEN HUGGING_FACE_HUB_TOKEN OPENAI_API_KEY \
+  HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 export NO_PROXY=127.0.0.1,localhost
+export no_proxy=127.0.0.1,localhost
 
 # Keep one private loopback-session key across restarts. This lets an open
 # Noice City tab reconnect after a local server restart without exposing the
@@ -33,7 +35,7 @@ chmod 600 "$TOKEN_FILE"
 export VOICETRAINER_SESSION_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
 
 if ! .venv/bin/python -m voice_trainer.bootstrap --verify-only --quick >/dev/null 2>&1; then
-  echo "Noice City will finish its one-time model setup in the browser."
+  echo "Noice City will finish its one-time Qwen setup in the browser."
 fi
 PORT="${VOICETRAINER_PORT:-8787}"
 URL="http://127.0.0.1:${PORT}/#${VOICETRAINER_SESSION_TOKEN}"

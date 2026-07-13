@@ -1715,6 +1715,7 @@ class VoiceStore:
         *,
         transcripts: Mapping[str, str] | None = None,
         confirm_review: bool = False,
+        playback_confirmed_ids: set[str] | frozenset[str] | None = None,
         override_failed_qa: bool = False,
         variant_id: str | None = None,
     ) -> dict[str, Any]:
@@ -1728,6 +1729,11 @@ class VoiceStore:
         if len(unique_ids) > 500:
             raise ValueError("A bulk review may contain at most 500 recordings")
         transcript_values = dict(transcripts or {})
+        played_ids = set(playback_confirmed_ids or ())
+        if not played_ids.issubset(unique_ids):
+            raise ValueError(
+                "Playback confirmations must belong to the selected recordings"
+            )
         updated: list[dict[str, Any]] = []
         overridden_ids: list[str] = []
         skipped: list[dict[str, str]] = []
@@ -1756,17 +1762,19 @@ class VoiceStore:
                     continue
             try:
                 updated_recording = self.update_recording(
-                        recording_id,
-                        status,
-                        transcript=str(transcript) if transcript else None,
-                        override_qa=override_failed_qa and status == "approved",
-                        playback_confirmed=confirm_review and status == "approved",
-                        note=(
-                            "Approved in explicit batch review with QA override"
-                            if status == "approved" and is_qa_override
-                            else f"{status.capitalize()} in explicit batch review"
-                        ),
-                    )
+                    recording_id,
+                    status,
+                    transcript=str(transcript) if transcript else None,
+                    override_qa=override_failed_qa and status == "approved",
+                    playback_confirmed=(
+                        status == "approved" and recording_id in played_ids
+                    ),
+                    note=(
+                        "Approved in explicit batch review with QA override"
+                        if status == "approved" and is_qa_override
+                        else f"{status.capitalize()} in explicit batch review"
+                    ),
+                )
                 updated.append(updated_recording)
                 if is_qa_override:
                     overridden_ids.append(recording_id)
@@ -1780,24 +1788,6 @@ class VoiceStore:
             "skipped_count": len(skipped),
             "updated_ids": [row["id"] for row in updated],
             "skipped": skipped,
-        }
-
-    def approve_all_pending(self, *, variant_id: str | None = None) -> dict[str, Any]:
-        """Backward-compatible explicit batch approval for all pending takes."""
-
-        pending_ids = [
-            row["id"] for row in self.list_recordings("pending", variant_id=variant_id)
-        ]
-        result = self.bulk_update_recordings(
-            pending_ids,
-            "approved",
-            confirm_review=True,
-            variant_id=variant_id,
-        )
-        return {
-            **result,
-            "approved_count": result["updated_count"],
-            "approved_ids": result["updated_ids"],
         }
 
     def freeze_dataset(
