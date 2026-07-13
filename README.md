@@ -1,10 +1,12 @@
 <div align="center">
   <img src="assets/branding/NoiceCity-1024.png" width="180" alt="Noice City skyline and soundwave logo">
   <h1>Noice City</h1>
-  <p><strong><a href="https://github.com/RuhiTaj/noice-city/releases/download/v0.1.0/Noice-City-0.1.0-arm64.dmg">Download Noice City 0.1.0 for Apple Silicon</a></strong></p>
+  <p><strong>macOS download temporarily withdrawn</strong><br>
+  The 0.1.0 package selected a macOS 26-only MLX wheel. A corrected,
+  re-audited Apple Silicon build is coming soon.</p>
   <p><a href="LICENSE">Apache License 2.0</a> · <a href="TRADEMARKS.md">Brand policy</a></p>
   <p>Developer ID signed, Apple notarized, and stapled for offline verification.<br>
-  <a href="https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.0">Release notes and SHA-256 checksum</a></p>
+  <a href="https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.0">Withdrawal details</a></p>
 </div>
 
 Noice City creates persistent personal voice variants from the installed
