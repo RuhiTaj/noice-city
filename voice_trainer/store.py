@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from .audio import AudioQualityReport, analyze_master_wav, derive_training_wav, save_master_wav
-from .prompts import Prompt, PromptCatalog
+from .prompts import (
+    DEFAULT_PROMPT_PACK,
+    INDIAN_ENGLISH_PACK,
+    VALID_PROMPT_PACKS,
+    Prompt,
+    PromptCatalog,
+)
 
 
 PROFILE_ID = "ruhi"
@@ -466,14 +472,18 @@ class VoiceStore:
             return int(row[0])
 
     @staticmethod
-    def _insert_default_variant(connection: sqlite3.Connection) -> None:
+    def _insert_default_variant(
+        connection: sqlite3.Connection,
+        *,
+        prompt_pack: str = DEFAULT_PROMPT_PACK,
+    ) -> None:
         now = _now()
         connection.execute(
             """
             INSERT INTO voice_variants(
                 id, slug, name, description, state, is_default, metadata_json,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'active', 1, '{}', ?, ?)
+            ) VALUES (?, ?, ?, ?, 'active', 1, ?, ?, ?)
             ON CONFLICT(id) DO NOTHING
             """,
             (
@@ -481,6 +491,7 @@ class VoiceStore:
                 DEFAULT_VARIANT_SLUG,
                 DEFAULT_VARIANT_NAME,
                 "Default lineage for recordings and persistent named-speaker checkpoints.",
+                _canonical_json({"prompt_pack": prompt_pack}),
                 now,
                 now,
             ),
@@ -525,7 +536,10 @@ class VoiceStore:
             destination.execute("PRAGMA foreign_keys = ON")
             destination.executescript(SCHEMA)
             destination.execute("BEGIN IMMEDIATE")
-            self._insert_default_variant(destination)
+            self._insert_default_variant(
+                destination,
+                prompt_pack=INDIAN_ENGLISH_PACK,
+            )
 
             for row in source.execute("SELECT key, value FROM app_meta WHERE key<>'schema_version'"):
                 destination.execute(
@@ -775,7 +789,12 @@ class VoiceStore:
             raise RuntimeError(f"Unsupported Noice City schema version: {version}")
         with self._connect() as connection:
             connection.executescript(SCHEMA)
-            self._insert_default_variant(connection)
+            self._insert_default_variant(
+                connection,
+                prompt_pack=(
+                    DEFAULT_PROMPT_PACK if version == 0 else INDIAN_ENGLISH_PACK
+                ),
+            )
             connection.execute("DROP INDEX IF EXISTS idx_one_promoted_checkpoint")
             connection.execute(
                 "INSERT OR REPLACE INTO app_meta(key, value) VALUES ('schema_version', ?)",
@@ -839,6 +858,25 @@ class VoiceStore:
         return value
 
     @staticmethod
+    def _prompt_pack(metadata: Mapping[str, Any] | None) -> str:
+        """Resolve a variant pack without rewriting pre-pack user state.
+
+        Variants created before prompt packs existed have no marker and retain
+        the deployed Indian-English prompt behavior. Fresh installs and every
+        newly created variant write the US-English default explicitly.
+        """
+
+        value = (metadata or {}).get("prompt_pack")
+        return str(value) if value in VALID_PROMPT_PACKS else INDIAN_ENGLISH_PACK
+
+    @classmethod
+    def _variant_row(cls, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        value = cls._row(row, json_fields=("metadata_json",))
+        if value is not None:
+            value["prompt_pack"] = cls._prompt_pack(value["metadata_json"])
+        return value
+
+    @staticmethod
     def _validate_variant_slug(slug: str) -> str:
         value = slug.strip().lower()
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
@@ -887,6 +925,10 @@ class VoiceStore:
         if description_value and len(description_value) > 500:
             raise ValueError("Variant description must contain at most 500 characters")
         variant_id = f"variant_{uuid.uuid4().hex}"
+        metadata_value = dict(metadata or {})
+        metadata_value.setdefault("prompt_pack", DEFAULT_PROMPT_PACK)
+        if metadata_value["prompt_pack"] not in VALID_PROMPT_PACKS:
+            raise ValueError("Prompt pack must be en-US or en-IN")
         now = _now()
         with self._connect() as connection:
             if make_default:
@@ -900,7 +942,7 @@ class VoiceStore:
                     """,
                     (
                         variant_id, slug_value, display_name, description_value,
-                        int(make_default), _canonical_json(dict(metadata or {})), now, now,
+                        int(make_default), _canonical_json(metadata_value), now, now,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -908,7 +950,7 @@ class VoiceStore:
             row = connection.execute(
                 "SELECT * FROM voice_variants WHERE id=?", (variant_id,)
             ).fetchone()
-        return self._row(row, json_fields=("metadata_json",)) or {}
+        return self._variant_row(row) or {}
 
     def list_voice_variants(self, *, include_archived: bool = True) -> list[dict[str, Any]]:
         query = "SELECT * FROM voice_variants"
@@ -917,12 +959,12 @@ class VoiceStore:
         query += " ORDER BY is_default DESC, created_at, id"
         with self._connect() as connection:
             rows = connection.execute(query).fetchall()
-        return [self._row(row, json_fields=("metadata_json",)) or {} for row in rows]
+        return [self._variant_row(row) or {} for row in rows]
 
     def get_voice_variant(self, variant_id: str | None = None) -> dict[str, Any]:
         with self._connect() as connection:
             row = self._resolve_variant(connection, variant_id)
-        return self._row(row, json_fields=("metadata_json",)) or {}
+        return self._variant_row(row) or {}
 
     def update_voice_variant(
         self,
@@ -932,9 +974,12 @@ class VoiceStore:
         description: str | None = None,
         state: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        prompt_pack: str | None = None,
     ) -> dict[str, Any]:
         if state is not None and state not in {"active", "archived"}:
             raise ValueError("Variant state must be active or archived")
+        if prompt_pack is not None and prompt_pack not in VALID_PROMPT_PACKS:
+            raise ValueError("Prompt pack must be en-US or en-IN")
         with self._connect() as connection:
             existing = self._resolve_variant(connection, variant_id)
             display_name = existing["name"] if name is None else name.strip()
@@ -951,6 +996,8 @@ class VoiceStore:
             next_metadata = (
                 _json_object(existing["metadata_json"]) if metadata is None else dict(metadata)
             )
+            if prompt_pack is not None:
+                next_metadata["prompt_pack"] = prompt_pack
             connection.execute(
                 """UPDATE voice_variants SET name=?,description=?,state=?,metadata_json=?,updated_at=?
                    WHERE id=?""",
@@ -962,7 +1009,7 @@ class VoiceStore:
             row = connection.execute(
                 "SELECT * FROM voice_variants WHERE id=?", (variant_id,)
             ).fetchone()
-        return self._row(row, json_fields=("metadata_json",)) or {}
+        return self._variant_row(row) or {}
 
     def set_default_voice_variant(self, variant_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -976,7 +1023,7 @@ class VoiceStore:
             row = connection.execute(
                 "SELECT * FROM voice_variants WHERE id=?", (variant_id,)
             ).fetchone()
-        return self._row(row, json_fields=("metadata_json",)) or {}
+        return self._variant_row(row) or {}
 
     @staticmethod
     def _custom_script_gate_seconds(
@@ -1288,6 +1335,9 @@ class VoiceStore:
             )
         return {
             "variant_id": variant["id"],
+            "prompt_pack": self._prompt_pack(
+                _json_object(variant["metadata_json"])
+            ),
             "root": str(self.paths.root),
             "recordings": int(summary["recordings"]),
             "total_seconds": float(summary["total_seconds"]),
@@ -1369,12 +1419,14 @@ class VoiceStore:
             raise ValueError("Prompt mode must be guided, interview, or hybrid")
         with self._connect() as connection:
             excluded: set[str] = set()
+            prompt_pack = DEFAULT_PROMPT_PACK
             counts = {"guided": 0, "interview": 0}
             split_counts = {"train": 0, "validation": 0, "test": 0}
             style_counts = {"neutral": 0, "expressive": 0}
             if session_id:
                 session = connection.execute(
-                    """SELECT s.status, v.state AS variant_state
+                    """SELECT s.status, v.state AS variant_state,
+                              v.metadata_json AS variant_metadata
                        FROM sessions s JOIN voice_variants v ON v.id=s.variant_id
                        WHERE s.id=?""",
                     (session_id,),
@@ -1385,6 +1437,9 @@ class VoiceStore:
                     raise ValueError(f"Session is not active: {session_id}")
                 if session["variant_state"] != "active":
                     raise ValueError(f"Session voice variant is archived: {session_id}")
+                prompt_pack = self._prompt_pack(
+                    _json_object(session["variant_metadata"])
+                )
                 rows = connection.execute(
                     """
                     SELECT r.prompt_id, p.kind, p.split, p.style FROM recordings r
@@ -1412,6 +1467,7 @@ class VoiceStore:
         )
         prompt = self.catalog.select(
             split=split, kind=kind, style=style,
+            pack=prompt_pack,
             exclude=excluded,
             chooser_seed=session_id or "global",
         )
@@ -1422,6 +1478,7 @@ class VoiceStore:
             prompt = self.catalog.select(
                 split=split,
                 kind=kind,
+                pack=prompt_pack,
                 exclude=excluded,
                 chooser_seed=f"{session_id}:style-fallback:{len(excluded)}",
             )
@@ -1429,6 +1486,7 @@ class VoiceStore:
             prompt = self.catalog.select(
                 split=split,
                 kind=kind,
+                pack=prompt_pack,
                 chooser_seed=f"{session_id}:repeat:{len(excluded)}",
             )
         return prompt.to_dict() if prompt else None
@@ -1929,6 +1987,9 @@ class VoiceStore:
                     "display_name": variant_row["name"],
                     "profile": PROFILE_ID,
                     "language": "english",
+                    "prompt_pack": self._prompt_pack(
+                        _json_object(variant_row["metadata_json"])
+                    ),
                 },
                 "source_policy": "fresh_voice_trainer_recordings_only",
                 "prompt_catalog_version": self.catalog.version,

@@ -2,9 +2,9 @@
 
 Noice City 0.1.1 targets Apple Silicon Macs running macOS 14.0 or newer.
 Intel Macs are not supported because the MLX runtime requires Apple Silicon.
-The first corrected artifact is published as a release candidate; stable
-promotion requires the GitHub-downloaded DMG to pass on a separate, clean
-macOS 14 Apple Silicon Mac.
+The first corrected artifact was published as a release candidate. Stable
+promotion requires the exact GitHub-downloaded DMG to pass on a separate,
+clean macOS 14 Apple Silicon Mac; the 0.1.1 stable release follows that gate.
 
 ## Why 0.1.0 was withdrawn
 

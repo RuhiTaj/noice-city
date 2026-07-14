@@ -91,6 +91,7 @@ class VoiceVariantUpdate(StrictBody):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     description: str | None = Field(default=None, max_length=500)
     state: Literal["active", "archived"] | None = None
+    prompt_pack: Literal["en-US", "en-IN"] | None = None
 
 
 class RecordingSessionCreate(StrictBody):
@@ -803,6 +804,7 @@ def api_update_variant(variant_id: str, body: VoiceVariantUpdate):
             name=body.name,
             description=body.description,
             state=body.state,
+            prompt_pack=body.prompt_pack,
         )
     except Exception as exc:
         raise _safe_http_error(exc) from exc

@@ -116,7 +116,7 @@ packaging/macos/build-app.sh \
   --runtime build/macos/runtime \
   --bundle-id com.example.noicecity \
   --version 0.1.1 \
-  --build 3 \
+  --build 4 \
   --sign -
 
 packaging/macos/verify-app.sh 'dist/macos/Noice City.app'
@@ -133,7 +133,7 @@ For a public build, use the installed Developer ID identity:
 packaging/macos/build-app.sh \
   --runtime build/macos/runtime \
   --version 0.1.1 \
-  --build 3 \
+  --build 4 \
   --sign "Developer ID Application: Ruhitaj Reddypalli (28DPUBPSZD)"
 
 packaging/macos/verify-app.sh --release 'dist/macos/Noice City.app'

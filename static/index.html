@@ -98,6 +98,16 @@
 
           <div class="record-grid">
             <article class="panel recorder-panel">
+              <div class="prompt-pack-bar">
+                <label for="prompt-pack-select">
+                  <span>Prompt pack</span>
+                  <select id="prompt-pack-select" disabled>
+                    <option value="en-US">English (US)</option>
+                    <option value="en-IN">Indian English</option>
+                  </select>
+                </label>
+                <p id="prompt-pack-help">Vocabulary coverage for this voice variant. Prompt packs change the words you practice—not your accent.</p>
+              </div>
               <div class="panel-heading">
                 <div class="segmented" role="group" aria-label="Prompt type">
                   <button class="active" type="button" data-prompt-kind="hybrid">Recommended mix</button>
@@ -481,7 +491,7 @@
           </div>
           <label>
             <span>Name</span>
-            <input id="variant-name" name="name" maxlength="60" required placeholder="e.g. Warm Indian English">
+            <input id="variant-name" name="name" maxlength="60" required placeholder="e.g. Warm narration">
           </label>
           <label>
             <span>Description</span>

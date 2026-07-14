@@ -71,9 +71,43 @@ def test_v2_accepts_fully_explicit_catalog(tmp_path: Path) -> None:
 
     catalog = PromptCatalog.load(_write_catalog(tmp_path, payload))
 
-    assert {prompt.id: prompt.split for prompt in catalog.prompts} == assigned
-    expected = Counter(assigned.values())
+    legacy_assigned = {
+        prompt_id: assigned[prompt_id]
+        for prompt_id in (item["id"] for item in payload["prompts"])
+    }
+    assert {prompt.id: prompt.split for prompt in catalog.prompts} == legacy_assigned
+    expected = Counter(legacy_assigned.values())
     assert catalog.summary()["splits"] == dict(expected)
+
+
+def test_bundled_prompt_packs_are_separate_and_keep_the_same_mix() -> None:
+    catalog = PromptCatalog.load()
+    for pack in ("en-US", "en-IN"):
+        prompts = [prompt for prompt in catalog.prompts if prompt.pack == pack]
+        assert len(prompts) == 150
+        assert Counter(prompt.kind for prompt in prompts) == {
+            "guided": 120,
+            "interview": 30,
+        }
+        assert Counter(prompt.style for prompt in prompts) == {
+            "neutral": 135,
+            "expressive": 15,
+        }
+        assert Counter(prompt.split for prompt in prompts) == {
+            "train": 120,
+            "validation": 15,
+            "test": 15,
+        }
+
+    us_text = " ".join(
+        prompt.text for prompt in catalog.prompts if prompt.pack == "en-US"
+    ).casefold()
+    indian_text = " ".join(
+        prompt.text for prompt in catalog.prompts if prompt.pack == "en-IN"
+    ).casefold()
+    assert all(term not in us_text for term in ("rupees", "tirupati", "bengaluru", "aadhaar", "u p i"))
+    assert all(term in us_text for term in ("dollars", "seattle", "albuquerque", "massachusetts"))
+    assert all(term in indian_text for term in ("rupees", "tirupati", "bengaluru"))
 
 
 def test_v2_mixed_catalog_preserves_explicit_and_stratifies_implicit(

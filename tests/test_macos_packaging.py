@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging" / "macos"
 EXPECTED_VERSION = "0.1.1"
-EXPECTED_BUILD = "3"
+EXPECTED_BUILD = "4"
 EXPECTED_MACOS = "14.0"
 EXPECTED_FASTAPI = "0.139.0"
 EXPECTED_MULTIPART = "0.0.32"

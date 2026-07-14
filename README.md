@@ -1,10 +1,10 @@
 <div align="center">
   <img src="assets/branding/NoiceCity-1024.png" width="180" alt="Noice City skyline and soundwave logo">
   <h1>Noice City</h1>
-  <p><strong><a href="https://github.com/RuhiTaj/noice-city/releases/download/v0.1.1-rc.1/Noice-City-0.1.1-arm64.dmg">Download the Noice City 0.1.1 release candidate for Apple Silicon</a></strong></p>
+  <p><strong><a href="https://github.com/RuhiTaj/noice-city/releases/download/v0.1.1/Noice-City-0.1.1-arm64.dmg">Download Noice City 0.1.1 for Apple Silicon</a></strong></p>
   <p><a href="LICENSE">Apache License 2.0</a> · <a href="TRADEMARKS.md">Brand policy</a></p>
   <p>Developer ID signed, Apple notarized, and stapled for offline verification.<br>
-  <a href="https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.1-rc.1">Release notes, compatibility audit, and SHA-256 checksum</a></p>
+  <a href="https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.1">Release notes, compatibility audit, and SHA-256 checksum</a></p>
 </div>
 
 Noice City creates persistent personal voice variants from the installed
@@ -132,35 +132,40 @@ loopback Origin.
 1. Choose or create a **Voice variant**. Every recording session is pinned to
    that stable lineage, and the selector scopes Record, Review, Train, and
    Generate. Variant display names may be changed without changing ownership.
-2. **Record** starts with the recommended automatic mix: 80% guided reading,
+2. Choose that variant's **Prompt pack** on Record. Fresh installs and new
+   variants default to **English (US)** vocabulary, places, currency, dates,
+   and everyday terms. **Indian English** remains available for Indian names,
+   places, currency, food, and terminology. The selection is stored per voice
+   variant and changes text coverage—not the accent the model learns from you.
+3. **Record** starts with the recommended automatic mix: 80% guided reading,
    20% interview answers, 90% neutral, and 10% mild expression. Prompts are
    assigned to 80% train, 10% validation, and 10% locked test before capture.
-3. Masters are immutable 48 kHz mono PCM24 WAV. Noice City creates immutable
+4. Masters are immutable 48 kHz mono PCM24 WAV. Noice City creates immutable
    24 kHz mono PCM16 training derivatives. Its built-in audio analysis checks
    speech activity, silence, clipping, speaking level/noise, and duration
    without Whisper. When the optional Whisper model is installed, it also adds
    automatic transcription, transcript comparison, and WER checks. Otherwise,
    transcript review remains manual. Uncertain takes require complete playback
    and explicit transcript confirmation.
-4. After two approved minutes from the built-in Recommended mix, **My script**
+5. After two approved minutes from the built-in Recommended mix, **My script**
    unlocks for that voice variant. Paste up to 20,000 characters and the app
    creates short, resumable recording takes. These are supplemental guided,
    neutral training items; validation/test and coverage gates continue to use
    the preassigned catalog prompts.
-5. Install Whisper before starting training; the app requires it for automatic
+6. Install Whisper before starting training; the app requires it for automatic
    checkpoint transcription/WER and evaluation. At two accepted minutes, freeze
    a pilot dataset and train one pilot checkpoint. At thirty accepted minutes,
    freeze a full dataset; sixty minutes is recommended. Training always reads a
    checksummed frozen manifest, never the live recording collection.
-6. Training runs in a separate offline process and exits after saving its
+7. Training runs in a separate offline process and exits after saving its
    artifacts. A different fresh process reloads each checkpoint and generates
    the twenty locked narration tests without reference audio.
-7. Local evaluation measures Whisper WER, Qwen ECAPA speaker similarity against
+8. Local evaluation measures Whisper WER, Qwen ECAPA speaker similarity against
    held-out real test takes, repetition, silence, termination, and duration.
    Complete the hidden A/B listening review in **Train**. A checkpoint is
    promoted only when all objective gates pass and it wins at least 12/20
    comparisons. Failed candidates and the prior promoted version are retained.
-8. **Generate** accepts text, a delivery preset, a checkpoint version, and an
+9. **Generate** accepts text, a delivery preset, a checkpoint version, and an
    optional integer seed (`0`–`4294967295`) for reproducible sampling. Omitting
    the seed preserves stochastic generation. The API has no reference-audio
    field.
@@ -202,15 +207,15 @@ under `/api/checkpoints/{id}/...` for the local UI.
 
 ## macOS app and DMG
 
-The 0.1.1 release candidate is available from the [GitHub release
-page](https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.1-rc.1). The DMG is
+Noice City 0.1.1 is available from the [GitHub release
+page](https://github.com/RuhiTaj/noice-city/releases/tag/v0.1.1). The DMG is
 Developer ID signed, Apple notarized, stapled, and published with a SHA-256
 checksum. The current package target is Apple Silicon on macOS 14.0 or newer;
 Intel Macs are not supported because MLX requires Apple Silicon. Version 0.1.0
 was withdrawn after its release build incorrectly selected macOS 26-specific
-MLX wheels. The candidate remains a prerelease until its GitHub-downloaded DMG
-also passes on a separate macOS 14 Apple Silicon Mac. See the [compatibility
-policy and incident audit](docs/COMPATIBILITY.md).
+MLX wheels. The stable package is promoted only after its GitHub-downloaded DMG
+passes on a separate macOS 14 Apple Silicon Mac. See the [compatibility policy
+and incident audit](docs/COMPATIBILITY.md).
 
 The release scaffold in [`packaging/macos`](packaging/macos/README.md) builds an
 Apple Silicon `.app`, signs its nested runtime, creates a drag-to-Applications

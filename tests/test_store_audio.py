@@ -92,16 +92,18 @@ def test_prompt_catalog_is_versioned_and_deterministically_stratified() -> None:
     second = PromptCatalog.load()
     assert first.summary() == {
         "version": 2,
-        "total": 150,
-        "kinds": {"guided": 120, "interview": 30},
-        "styles": {"neutral": 135, "expressive": 15},
-        "splits": {"train": 120, "test": 15, "validation": 15},
+        "total": 300,
+        "kinds": {"guided": 240, "interview": 60},
+        "styles": {"neutral": 270, "expressive": 30},
+        "splits": {"train": 240, "test": 30, "validation": 30},
+        "packs": {"en-IN": 150, "en-US": 150},
+        "default_pack": "en-US",
     }
     assert [(item.id, item.split) for item in first.prompts] == [
         (item.id, item.split) for item in second.prompts
     ]
-    for kind, expected in (("guided", {"train": 96, "validation": 12, "test": 12}),
-                           ("interview", {"train": 24, "validation": 3, "test": 3})):
+    for kind, expected in (("guided", {"train": 192, "validation": 24, "test": 24}),
+                           ("interview", {"train": 48, "validation": 6, "test": 6})):
         counts = {split: 0 for split in ("train", "validation", "test")}
         for prompt in first.prompts:
             if prompt.kind == kind:
@@ -397,7 +399,10 @@ def test_voice_variant_lineage_filtering_and_promotions(tmp_path: Path) -> None:
     )
     assert variant["id"].startswith("variant_")
     assert variant["id"] == variant["id"].lower()
-    assert store.get_voice_variant(variant["id"])["metadata_json"] == {"language": "english"}
+    assert store.get_voice_variant(variant["id"])["metadata_json"] == {
+        "language": "english",
+        "prompt_pack": "en-US",
+    }
 
     default_rows = _approved_variant_recordings(store, DEFAULT_VARIANT_ID)
     variant_rows = _approved_variant_recordings(store, variant["id"])
@@ -429,6 +434,7 @@ def test_voice_variant_lineage_filtering_and_promotions(tmp_path: Path) -> None:
         "display_name": "Indian Names",
         "profile": "ruhi",
         "language": "english",
+        "prompt_pack": "en-US",
     }
 
     default_run = store.create_training_run(default_dataset["id"], {"stage": "pilot"})
@@ -505,6 +511,37 @@ def test_variant_crud_and_session_prompt_validation(tmp_path: Path) -> None:
         store.next_prompt(session_id="session_missing")
 
 
+def test_prompt_pack_defaults_and_persists_per_voice_variant(tmp_path: Path) -> None:
+    store = VoiceStore(tmp_path).initialize()
+    default = store.get_voice_variant()
+    assert default["prompt_pack"] == "en-US"
+    default_session = store.create_session("guided", variant_id=default["id"])
+    assert store.next_prompt(session_id=default_session["id"], mode="guided")["id"].startswith("us-")
+
+    variant = store.create_voice_variant("Home voice")
+    assert variant["prompt_pack"] == "en-US"
+    updated = store.update_voice_variant(variant["id"], prompt_pack="en-IN")
+    assert updated["prompt_pack"] == "en-IN"
+    assert updated["metadata_json"]["prompt_pack"] == "en-IN"
+    indian_session = store.create_session("guided", variant_id=variant["id"])
+    assert not store.next_prompt(session_id=indian_session["id"], mode="guided")["id"].startswith("us-")
+    assert store.status(variant["id"])["prompt_pack"] == "en-IN"
+
+
+def test_pre_pack_variant_retains_indian_prompt_behavior(tmp_path: Path) -> None:
+    store = VoiceStore(tmp_path).initialize()
+    with sqlite3.connect(store.paths.database) as connection:
+        connection.execute(
+            "UPDATE voice_variants SET metadata_json='{}' WHERE id=?",
+            (DEFAULT_VARIANT_ID,),
+        )
+
+    reopened = VoiceStore(tmp_path).initialize()
+    assert reopened.get_voice_variant()["prompt_pack"] == "en-IN"
+    session = reopened.create_session("guided")
+    assert not reopened.next_prompt(session_id=session["id"], mode="guided")["id"].startswith("us-")
+
+
 def _create_v1_database(path: Path, immutable_manifest: Path) -> None:
     schema = """
     CREATE TABLE app_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -548,6 +585,7 @@ def test_schema_v1_copy_on_write_migration_preserves_lineage_and_manifest(tmp_pa
     store = VoiceStore(tmp_path).initialize()
 
     assert manifest.read_bytes() == before
+    assert store.get_voice_variant()["prompt_pack"] == "en-IN"
     legacy_backup = tmp_path / "state.sqlite.schema-v1.backup"
     assert legacy_backup.is_file()
     with sqlite3.connect(legacy_backup) as connection:

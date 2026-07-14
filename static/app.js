@@ -5,6 +5,16 @@ const SESSION_KEY = "voicetrainer_session";
 const ACTIVE_VARIANT_KEY = "voicetrainer_active_variant";
 const VARIANT_SESSIONS_KEY = "voicetrainer_variant_sessions";
 const MAX_GENERATION_SEED = 4294967295;
+const PROMPT_PACKS = Object.freeze({
+  "en-US": {
+    label: "English (US)",
+    help: "US vocabulary, places, currency, dates, and everyday terms. Prompt packs change the words you practice—not your accent.",
+  },
+  "en-IN": {
+    label: "Indian English",
+    help: "Indian names, places, currency, food, and everyday terms. Prompt packs change the words you practice—not your accent.",
+  },
+});
 const MODEL_DOWNLOAD_DISCLOSURES = Object.freeze({
   qwen: {
     name: "Qwen3-TTS 1.7B Base",
@@ -156,11 +166,14 @@ function variantId(variant) {
 }
 
 function normalizeVariant(variant) {
+  const metadata = variant?.metadata_json || variant?.metadata || {};
+  const promptPack = variant?.prompt_pack || metadata.prompt_pack || "en-IN";
   return {
     ...variant,
     id: variantId(variant),
     name: variant?.name || variant?.display_name || variant?.label || variantId(variant),
     description: variant?.description || "",
+    promptPack: PROMPT_PACKS[promptPack] ? promptPack : "en-IN",
     status: String(variant?.state || variant?.status || (variant?.archived ? "archived" : "active")).toLowerCase(),
   };
 }
@@ -254,6 +267,16 @@ function renderVariantContext() {
     ? `Active session · ${session.id.slice(-6)}`
     : state.variantId ? "Creating a private session…" : "Waiting for a variant";
   $("#new-recording-session").disabled = !state.variantId || Boolean(state.capture || state.take || state.recordingStarting || state.savingTake);
+  renderPromptPackControl();
+}
+
+function renderPromptPackControl() {
+  const select = $("#prompt-pack-select");
+  const variant = activeVariant();
+  const pack = variant?.promptPack || "en-US";
+  select.value = PROMPT_PACKS[pack] ? pack : "en-US";
+  select.disabled = !variant || Boolean(state.capture || state.take || state.recordingStarting || state.savingTake);
+  $("#prompt-pack-help").textContent = (PROMPT_PACKS[select.value] || PROMPT_PACKS["en-US"]).help;
 }
 
 function renderVariantControls() {
@@ -286,7 +309,8 @@ function renderVariantManager() {
     const name = document.createElement("strong");
     name.textContent = variant.name;
     const description = document.createElement("p");
-    description.textContent = variant.description || (variant.status === "archived" ? "Archived voice lineage" : "Independent local voice lineage");
+    const descriptionText = variant.description || (variant.status === "archived" ? "Archived voice lineage" : "Independent local voice lineage");
+    description.textContent = `${descriptionText} · ${(PROMPT_PACKS[variant.promptPack] || PROMPT_PACKS["en-IN"]).label} prompts`;
     copy.append(name, description);
     const actions = document.createElement("div");
     if (variant.status !== "archived") {
@@ -490,6 +514,53 @@ async function createVariant(event) {
   } finally {
     button.disabled = false;
     button.textContent = "Create variant";
+  }
+}
+
+async function updatePromptPack(nextPack) {
+  const variant = activeVariant();
+  if (!variant || !PROMPT_PACKS[nextPack] || nextPack === variant.promptPack) {
+    renderPromptPackControl();
+    return;
+  }
+  const blockReason = variantSwitchBlockReason();
+  if (blockReason) {
+    renderPromptPackControl();
+    showToast(blockReason.replace("voice variants", "prompt packs"), "error");
+    return;
+  }
+  const session = currentVariantSession();
+  if (Number(session?.takes || state.session.takes) > 0 && !window.confirm(
+    `Switch ${variant.name} to ${PROMPT_PACKS[nextPack].label} prompts? A fresh recording session will start; saved takes stay unchanged.`
+  )) {
+    renderPromptPackControl();
+    return;
+  }
+  const id = variant.id;
+  const previous = variant.promptPack;
+  $("#prompt-pack-select").disabled = true;
+  try {
+    const updated = normalizeVariant(await api(`/variants/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: { prompt_pack: nextPack },
+    }));
+    if (state.variantId !== id) return;
+    Object.assign(variant, updated);
+    state.variantEpoch += 1;
+    delete state.variantSessions[id];
+    persistVariantSessions();
+    state.session = { takes: 0, seconds: 0, guided: 0, interview: 0 };
+    state.prompt = null;
+    state.skippedPrompts = [];
+    updateSession();
+    renderVariantControls();
+    const created = await ensureRecordingSession();
+    if (created && state.variantId === id) await Promise.allSettled([loadPrompt(), refreshStatus()]);
+    showToast(`${variant.name} now uses ${PROMPT_PACKS[nextPack].label} prompts.`);
+  } catch (error) {
+    variant.promptPack = previous;
+    renderPromptPackControl();
+    showToast(`Could not change the prompt pack: ${error.message}`, "error");
   }
 }
 
@@ -2349,6 +2420,7 @@ function bindEvents() {
   });
   $("#variant-create-form").addEventListener("submit", createVariant);
   $("#new-recording-session").addEventListener("click", newRecordingSession);
+  $("#prompt-pack-select").addEventListener("change", (event) => updatePromptPack(event.target.value));
   $$(".nav-item").forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
   $$(`[data-go-to]`).forEach((item) => item.addEventListener("click", () => setView(item.dataset.goTo)));
   $$("[data-prompt-kind]").forEach((button) => button.addEventListener("click", () => selectPromptKind(button.dataset.promptKind)));
